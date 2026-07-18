@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — Crypto Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Crypto Tracker">
+<style>
+  .login-wrap { min-height: 90vh; display: flex; align-items: center; justify-content: center; }
+  .login-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 34px 38px; width: 340px;
+  }
+  .login-card h1 { color: var(--accent); font-size: 22px; margin: 0 0 20px; text-align: center; }
+  .login-logo { display: block; margin: 0 auto 10px; width: 170px; }
+  .login-card label { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 5px; }
+  .login-card input {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 15px;
+  }
+  .login-card input:focus { outline: 1px solid var(--accent); }
+  .login-card button {
+    width: 100%; margin-top: 22px; background: var(--accent); color: #10151c;
+    font-weight: 700; border: none; border-radius: 8px; padding: 11px; font-size: 15px; cursor: pointer;
+  }
+  .login-error { color: var(--red); font-size: 13px; margin-top: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" method="POST" action="/login">
+    <img src="/static/logo.png" alt="" class="login-logo">
+    <h1>Crypto Tracker</h1>
+    <input type="hidden" name="mobile" id="mobile-field" value="">
+    <button type="button" id="pk-btn" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);margin-top:0">
+      &#x1F512; Sign in with Face ID / Touch ID
+    </button>
+    <div class="login-error" id="pk-err"></div>
+    <div style="text-align:center;color:var(--muted);font-size:12px;margin-top:16px">— or with password —</div>
+    <label>Username</label>
+    <input type="text" name="username" autocomplete="username" required>
+    <label>Password</label>
+    <input type="password" name="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+  </form>
+</div>
+<script>
+const isMobile = /iPhone|iPad|Android|Mobile/.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
+document.getElementById("mobile-field").value = isMobile ? "1" : "";
+const b64uToBuf = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const bufToB64u = (b) => btoa(String.fromCharCode(...new Uint8Array(b)))
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function pkSignin() {
+  const err = document.getElementById("pk-err");
+  err.textContent = "";
+  try {
+    const r = await fetch("/api/passkey/auth/options", { method: "POST" });
+    const opts = await r.json();
+    if (opts.error) { err.textContent = opts.error; return; }
+    opts.challenge = b64uToBuf(opts.challenge);
+    (opts.allowCredentials || []).forEach((c) => { c.id = b64uToBuf(c.id); });
+    const cred = await navigator.credentials.get({ publicKey: opts });
+    const payload = {
+      mobile: isMobile ? 1 : 0,
+      credential: {
+        id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+        response: {
+          clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+          authenticatorData: bufToB64u(cred.response.authenticatorData),
+          signature: bufToB64u(cred.response.signature),
+          userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null,
+        },
+        clientExtensionResults: cred.getClientExtensionResults(),
+      },
+    };
+    const vr = await fetch("/api/passkey/auth/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const res = await vr.json();
+    if (res.ok) location.href = "/";
+    else err.textContent = res.error || "Sign-in failed";
+  } catch (e) {
+    if (e.name !== "NotAllowedError") err.textContent = e.message;
+  }
+}
+document.getElementById("pk-btn").addEventListener("click", pkSignin);
+if (!window.PublicKeyCredential || !window.isSecureContext) {
+  document.getElementById("pk-btn").style.display = "none";
+}
+</script>
+</body>
+</html>

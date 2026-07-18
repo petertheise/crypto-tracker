@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Crypto Tracker">
+</head>
+<body>
+<header>
+  <h1><img src="/static/logo.png" alt="" class="logo">Crypto Tracker</h1>
+  <nav>
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="transactions">Transactions</button>
+    <button class="tab" data-tab="charts">Charts</button>
+    <button class="tab" data-tab="stocks">Stocks</button>
+    <button class="tab" data-tab="market">Market</button>
+    <button class="tab" data-tab="coins">Coins</button>
+    <button class="tab" data-tab="todo">To-Do</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+  <div id="asof"></div>
+  <a href="/logout" id="logout">Log out</a>
+</header>
+
+<main>
+  <!-- ======================= DASHBOARD ======================= -->
+  <section id="tab-dashboard" class="tabpane active">
+    <div class="cards" id="summary-cards"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Portfolio Value Over Time</h2>
+        <label class="toggle"><input type="checkbox" id="show-bench" checked> BTC</label>
+        <label class="toggle"><input type="checkbox" id="show-bench-eth" checked> ETH</label>
+        <label class="toggle"><input type="checkbox" id="show-bench-spx" checked> S&amp;P 500</label>
+        <label class="toggle"><input type="checkbox" id="show-bench-ndq" checked> Nasdaq</label>
+        <div class="range-btns" id="pf-range">
+          <button data-days="7">1W</button>
+          <button data-days="30">1M</button>
+          <button data-days="90">3M</button>
+          <button class="active" data-days="365">1Y</button>
+        </div>
+      </div>
+      <canvas id="pf-chart" height="90"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Drawdown <span class="hint-inline" id="dd-now"></span></h2>
+      <div class="chart-box short"><canvas id="dd-chart"></canvas></div>
+    </div>
+    <div class="two-col">
+      <div class="panel"><h2>Allocation by Coin</h2><canvas id="alloc-chart"></canvas></div>
+      <div class="panel"><h2>Allocation by Category</h2><canvas id="cat-chart"></canvas></div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <h2>Profit / Loss by Coin <span class="hint-inline">lifetime, incl. sold positions</span></h2>
+        <div class="chart-box tall"><canvas id="pl-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h2>Monthly Investing Activity</h2>
+        <div class="chart-box tall"><canvas id="monthly-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Allocation Over Time</h2>
+        <div class="range-btns" id="alloc-range">
+          <button data-days="30">1M</button>
+          <button data-days="90">3M</button>
+          <button class="active" data-days="365">1Y</button>
+        </div>
+      </div>
+      <div class="chart-box"><canvas id="alloc-time-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Holdings
+        <label class="toggle"><input type="checkbox" id="show-closed"> show closed positions</label>
+        <label class="toggle"><input type="checkbox" id="hide-dust"> hide dust (under $5)</label>
+      </h2>
+      <table id="holdings-table">
+        <thead><tr>
+          <th>Coin</th><th>Category</th><th class="r">Quantity</th><th class="r">Cold</th><th class="r">Avg Cost</th>
+          <th class="r">Price</th><th class="r">24h</th><th class="r">7d</th>
+          <th class="r">Value</th><th class="r">Net Cost</th><th class="r">P/L</th><th class="r">P/L %</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Rebalance Preview <span class="hint-inline">set target % per coin — nothing is traded, this only shows the math</span></h2>
+      <table id="rebal-table">
+        <thead><tr>
+          <th>Coin</th><th class="r">Value</th><th class="r">Current %</th>
+          <th class="r">Target %</th><th class="r">Target $</th><th class="r">To Get There</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="form-actions" style="margin-top:12px">
+        <button type="button" class="small" id="rebal-current">Set targets to current</button>
+        <button type="button" class="small" id="rebal-equal">Equal weight</button>
+        <button type="button" class="primary" id="rebal-save">Save targets</button>
+        <span id="rebal-sum"></span>
+        <span id="rebal-msg"></span>
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <h2>Break-Even <span class="hint-inline">what price gets each position back to green</span></h2>
+        <p class="hint" id="be-note"></p>
+        <table id="be-table">
+          <thead><tr><th>Coin</th><th class="r">Price Now</th><th class="r">Break-Even</th><th class="r">Move Needed</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <h2>Best &amp; Worst Buys <span class="hint-inline">live, entries over $5</span></h2>
+        <table id="bw-table">
+          <thead><tr><th>Date</th><th>Coin</th><th class="r">Spent</th><th class="r">Worth Now</th><th class="r">Return</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Yearly Activity</h2>
+      <table id="yearly-table">
+        <thead><tr><th>Year</th><th class="r">Invested (buys)</th><th class="r">Proceeds (sells)</th><th class="r">Net In</th><th class="r">Realized P/L (FIFO)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======================= TRANSACTIONS ======================= -->
+  <section id="tab-transactions" class="tabpane">
+    <details class="panel collapse" id="tx-details">
+      <summary><span id="tx-form-title">Add Transaction</span> <span class="hint-inline">manual entry — Coinbase sync usually handles this now</span></summary>
+      <form id="tx-form" class="tx-form">
+        <input type="hidden" id="tx-id">
+        <label>Type
+          <select id="tx-side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+        </label>
+        <label>Date <input type="date" id="tx-date" required></label>
+        <label>Coin <select id="tx-symbol" required></select></label>
+        <label>Quantity <input type="number" id="tx-qty" step="any" min="0" required></label>
+        <label>Price / coin ($) <input type="number" id="tx-price" step="any" min="0" placeholder="auto: total ÷ qty" required></label>
+        <label>Fee ($) <input type="number" id="tx-fee" step="any" min="0" value="0"></label>
+        <label>Total ($) <input type="number" id="tx-total" step="any" placeholder="auto"></label>
+        <label>Exchange <input type="text" id="tx-exchange" value="COINBASE"></label>
+        <label class="wide">Notes <input type="text" id="tx-notes"></label>
+        <div class="form-actions">
+          <button type="submit" class="primary" id="tx-submit">Add</button>
+          <button type="button" id="tx-cancel" class="hidden">Cancel edit</button>
+          <span id="tx-msg"></span>
+        </div>
+      </form>
+    </details>
+    <details class="panel collapse">
+      <summary>Record a Conversion <span class="hint-inline">one coin swapped for another — books a matched sell + buy</span></summary>
+      <form id="cv-form" class="tx-form">
+        <label>Date <input type="date" id="cv-date" required></label>
+        <label>From coin <select id="cv-from" required></select></label>
+        <label>Amount converted <input type="number" id="cv-from-qty" step="any" min="0" required></label>
+        <label>To coin <select id="cv-to" required></select></label>
+        <label>Amount received <input type="number" id="cv-to-qty" step="any" min="0" required></label>
+        <label>USD value ($) <input type="number" id="cv-usd" step="any" min="0" required></label>
+        <label class="wide">Notes <input type="text" id="cv-notes"></label>
+        <div class="form-actions">
+          <button type="submit" class="primary">Record conversion</button>
+          <span id="cv-msg"></span>
+        </div>
+      </form>
+    </details>
+    <details class="panel collapse">
+      <summary>Move to / from Cold Storage <span class="hint-inline">tracks where coins live — no effect on cost basis or P/L</span></summary>
+      <form id="tf-form" class="tx-form">
+        <label>Date <input type="date" id="tf-date" required></label>
+        <label>Coin <select id="tf-symbol" required></select></label>
+        <label>Quantity <input type="number" id="tf-qty" step="any" min="0" required></label>
+        <label>Direction
+          <select id="tf-direction">
+            <option value="to_cold">Coinbase → Cold Wallet</option>
+            <option value="from_cold">Cold Wallet → Coinbase</option>
+          </select>
+        </label>
+        <label class="wide">Notes <input type="text" id="tf-notes"></label>
+        <div class="form-actions">
+          <button type="submit" class="primary">Record transfer</button>
+          <span id="tf-msg"></span>
+        </div>
+      </form>
+      <table id="tf-table" style="margin-top:14px">
+        <thead><tr><th>Date</th><th>Coin</th><th>Direction</th><th class="r">Quantity</th><th>Notes</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>History</h2>
+        <select id="tx-filter"><option value="">All coins</option></select>
+      </div>
+      <div class="table-scroll">
+      <table id="tx-table">
+        <thead><tr>
+          <th>Date</th><th>Coin</th><th>Type</th><th class="r">Quantity</th><th class="r">Price</th>
+          <th class="r">Total</th>
+          <th class="r">Price Now</th><th class="r" title="Buys: value now minus what you paid. Sells: what you got minus what it would be worth today.">P/L</th><th class="r">Return</th>
+          <th>Notes</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= CHARTS ======================= -->
+  <section id="tab-charts" class="tabpane">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Price History</h2>
+        <select id="chart-coin"></select>
+        <div class="range-btns" id="coin-range">
+          <button data-days="7">7D</button>
+          <button data-days="30">1M</button>
+          <button data-days="90">3M</button>
+          <button data-days="ytd">YTD</button>
+          <button class="active" data-days="365">1Y</button>
+          <button data-days="730">2Y</button>
+        </div>
+      </div>
+      <canvas id="coin-chart" height="110"></canvas>
+      <div id="coin-chart-stats" class="chart-stats"></div>
+    </div>
+  </section>
+
+  <!-- ======================= STOCKS ======================= -->
+  <section id="tab-stocks" class="tabpane">
+    <div class="cards" id="stk-cards"></div>
+    <div class="two-col">
+      <div class="panel">
+        <h2>By Portfolio</h2>
+        <table id="stk-accts">
+          <thead><tr><th>Portfolio</th><th class="r">Value</th><th class="r">Invested</th><th class="r">Gain</th><th class="r">Income/yr</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel"><h2>Portfolio Split</h2><canvas id="stk-acct-donut"></canvas></div>
+    </div>
+    <div class="two-col">
+      <div class="panel"><h2>Allocation</h2><canvas id="stk-alloc"></canvas></div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Positions Valued Over Time</h2>
+          <div class="range-btns" id="stk-range">
+            <button data-days="7">1W</button>
+            <button data-days="30">1M</button>
+            <button data-days="ytd">YTD</button>
+            <button class="active" data-days="365">1Y</button>
+            <button data-days="730">2Y</button>
+            <button data-days="1095">3Y</button>
+            <button data-days="3650">10Y</button>
+          </div>
+        </div>
+        <p class="hint">Today's holdings priced historically — the Raymond James export has no purchase
+        dates, so this shows how your current positions moved, not the account's history.</p>
+        <div class="chart-box"><canvas id="stk-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Individual Performance</h2>
+        <div class="range-btns" id="stke-range">
+          <button data-days="7">1W</button>
+          <button data-days="30">1M</button>
+          <button data-days="ytd">YTD</button>
+          <button class="active" data-days="365">1Y</button>
+          <button data-days="730">2Y</button>
+          <button data-days="1095">3Y</button>
+          <button data-days="3650">10Y</button>
+        </div>
+      </div>
+      <p class="hint">Each holding's % change from the start of the period. Click names in the legend to hide/show lines.</p>
+      <div class="chart-box tall"><canvas id="stke-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Holdings <span class="hint-inline" id="stk-asof"></span></h2>
+        <select id="stk-acct-filter"><option value="">All portfolios</option></select>
+      </div>
+      <div class="table-scroll">
+      <table id="stk-table">
+        <thead><tr>
+          <th>Name</th><th>Symbol</th><th>Portfolio</th><th class="r">Quantity</th><th class="r">Price</th>
+          <th class="r">Value</th><th class="r">Invested</th><th class="r">Gain</th><th class="r">Gain %</th>
+          <th class="r">Est. Income/yr</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Update from Raymond James</h2>
+      <p class="hint">Export a fresh portfolio CSV from Raymond James and upload it here.
+      It replaces the current positions — do this after buys, sells, or dividend reinvestments.</p>
+      <div class="form-actions">
+        <input type="file" id="stk-file" accept=".csv">
+        <button type="button" class="primary" id="stk-upload">Import</button>
+        <span id="stk-msg"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= MARKET ======================= -->
+  <section id="tab-market" class="tabpane">
+    <div class="cards" id="market-cards"></div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Fear &amp; Greed Index</h2>
+          <div class="range-btns" id="fng-range">
+            <button data-days="7">1W</button>
+            <button class="active" data-days="30">1M</button>
+            <button data-days="365">1Y</button>
+            <button data-days="1095">3Y</button>
+            <button data-days="99999">All</button>
+          </div>
+        </div>
+        <div id="fng-gauge"></div>
+        <canvas id="fng-chart" height="140"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Trending on CoinGecko</h2>
+        <table id="trending-table">
+          <thead><tr><th>#</th><th>Coin</th><th class="r">Rank</th><th class="r">Price</th><th class="r">24h</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>BTC Long-Term Trend</h2>
+          <div class="range-btns" id="btcma-range">
+            <button data-days="365">1Y</button>
+            <button class="active" data-days="1095">3Y</button>
+            <button data-days="99999">All</button>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="btc-ma-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>ETH / BTC Ratio <span class="hint-inline">rising = altcoins gaining on BTC</span></h2>
+          <div class="range-btns" id="ratio-range">
+            <button data-days="365">1Y</button>
+            <button class="active" data-days="1095">3Y</button>
+            <button data-days="99999">All</button>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="ratio-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Stablecoin Supply</h2>
+          <div class="range-btns" id="stab-range">
+            <button data-days="365">1Y</button>
+            <button class="active" data-days="1095">3Y</button>
+            <button data-days="99999">All</button>
+          </div>
+        </div>
+        <p class="hint">Total value of all dollar-pegged coins (USDT, USDC, DAI…). Rising = new cash parked
+        inside crypto waiting to buy — historically bullish. Falling = money leaving crypto for banks.</p>
+        <div class="chart-box"><canvas id="stab-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>BTC Dominance <span class="hint-inline">Bitcoin's share of the total crypto market</span></h2>
+      <p class="hint">Rising dominance = money favoring BTC over altcoins (typical in fear);
+      falling = altcoins outperforming (typical in greed). Free APIs don't offer this as history,
+      so the app records one reading per day starting 2026-07-05 — the chart grows over time.</p>
+      <div class="chart-box short"><canvas id="dom-chart"></canvas></div>
+      <p class="hint hidden" id="dom-note"></p>
+    </div>
+  </section>
+
+  <!-- ======================= COINS ======================= -->
+  <section id="tab-coins" class="tabpane">
+    <div class="panel">
+      <h2>Add a Coin</h2>
+      <p class="hint">Search CoinGecko, pick the coin, choose a category, then it becomes available in the transaction form.</p>
+      <div class="tx-form">
+        <label class="wide">Search <input type="text" id="coin-search" placeholder="e.g. dogecoin"></label>
+      </div>
+      <div id="coin-results"></div>
+    </div>
+    <div class="panel">
+      <h2>Tracked Coins</h2>
+      <table id="coins-table">
+        <thead><tr><th>Symbol</th><th>Name</th><th>CoinGecko ID</th><th>Category</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======================= TO-DO ======================= -->
+  <section id="tab-todo" class="tabpane">
+    <div class="panel">
+      <h2>Future Ideas &amp; To-Do</h2>
+      <form id="todo-form" class="tx-form">
+        <label class="wide" style="grid-column: 1 / -2;">New item
+          <input type="text" id="todo-text" placeholder="e.g. add cold wallet address checking" required></label>
+        <div class="form-actions" style="grid-column: auto;">
+          <button type="submit" class="primary">Add</button>
+        </div>
+      </form>
+      <table id="todo-table" style="margin-top:14px">
+        <thead><tr><th></th><th>Item</th><th>Added</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======================= SETTINGS ======================= -->
+  <section id="tab-settings" class="tabpane">
+    <div class="panel">
+      <h2>Change Password</h2>
+      <form id="pw-form" class="tx-form" style="max-width:420px">
+        <label class="wide">Current password
+          <input type="password" id="pw-current" autocomplete="current-password" required></label>
+        <label class="wide">New password (6+ characters)
+          <input type="password" id="pw-new" autocomplete="new-password" minlength="6" required></label>
+        <label class="wide">Repeat new password
+          <input type="password" id="pw-new2" autocomplete="new-password" minlength="6" required></label>
+        <div class="form-actions">
+          <button type="submit" class="primary">Change password</button>
+          <span id="pw-msg"></span>
+        </div>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Coinbase Sync</h2>
+      <p class="hint" id="cb-status">Checking…</p>
+      <table id="cb-balances" class="hidden">
+        <thead><tr><th>Coin</th><th class="r">App (on Coinbase)</th><th class="r">Coinbase Actual</th><th class="r"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="form-actions" style="margin-top:10px">
+        <button type="button" class="primary" id="cb-sync">Sync now</button>
+        <span id="cb-msg"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Price Alerts <span class="hint-inline">Mac notification when a coin crosses your line — fires once, then deactivates</span></h2>
+      <form id="al-form" class="tx-form">
+        <label>Coin <select id="al-symbol"></select></label>
+        <label>When price goes
+          <select id="al-cond"><option value="below">below</option><option value="above">above</option></select>
+        </label>
+        <label>Price ($) <input type="number" id="al-price" step="any" min="0" required></label>
+        <div class="form-actions">
+          <button type="submit" class="primary">Add alert</button>
+          <span id="al-msg"></span>
+        </div>
+      </form>
+      <table id="al-table" style="margin-top:12px">
+        <thead><tr><th>Coin</th><th>Condition</th><th class="r">Price</th><th>Status</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint" style="margin-top:8px">Checked every 5 minutes while the Mac is awake. Notifications appear on this Mac only.</p>
+    </div>
+    <div class="panel">
+      <h2>Face ID / Touch ID Sign-In</h2>
+      <p class="hint">Add a passkey on each device you want to unlock with Face ID or Touch ID.
+      On phones and tablets, you'll be asked again after 30 minutes of inactivity; Macs stay signed in for 30 days.
+      Your password always works as a backup.</p>
+      <table id="pk-table" style="margin:10px 0">
+        <thead><tr><th>Device</th><th>Added</th><th>Last used</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="form-actions">
+        <input type="text" id="pk-name" placeholder="Name this device (e.g. Peter's iPhone)"
+               style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px;min-width:220px">
+        <button type="button" class="primary" id="pk-add">Add this device</button>
+        <span id="pk-msg"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Backups</h2>
+      <p class="hint" id="backup-info">Loading…</p>
+      <div class="form-actions">
+        <button type="button" class="primary" id="backup-now">Back up now</button>
+        <span id="backup-msg"></span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Tax Report</h2>
+      <p class="hint">FIFO realized gains, one row per sale — ready for your accountant.</p>
+      <div class="form-actions">
+        <select id="tax-year"></select>
+        <button type="button" class="primary" id="tax-dl">Download CSV</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Privacy</h2>
+      <label class="toggle" style="font-size:13.5px">
+        <input type="checkbox" id="show-networth" checked>
+        Show the Net Worth card on the Dashboard
+      </label>
+      <p class="hint" style="margin-top:6px">Turn this off (or click the ✕ on the card) before showing the app to someone —
+      the crypto dashboard then reveals nothing about your stock portfolio. The Stocks tab itself still shows everything.</p>
+    </div>
+    <div class="panel">
+      <h2>Access</h2>
+      <p class="hint">The app is available on your home network at
+        <b id="net-url"></b> while it is running on this Mac.
+        Other devices need the same username and password to sign in.
+        Signed-in devices stay signed in for 30 days.</p>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

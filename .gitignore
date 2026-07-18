@@ -1,0 +1,15 @@
+# secrets & personal data - never commit
+coinbase_key.json
+portfolio.db
+backups/
+tracker.log
+*.log
+
+# environment & caches
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# machine-local Claude Code config
+.claude/
