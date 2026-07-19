@@ -1017,12 +1017,14 @@ def compute_fifo(db):
         remaining = t["quantity"]
         cost = 0.0
         first_acq = None
+        sale_lots = []            # [qty consumed, unit cost, acquired date] per lot
         while remaining > 1e-12 and lots[sym]:
             lot = lots[sym][0]
             take = min(lot[0], remaining)
             cost += take * lot[1]
             if first_acq is None:
                 first_acq = lot[2]
+            sale_lots.append([take, lot[1], lot[2]])
             lot[0] -= take
             remaining -= take
             if lot[0] <= 1e-12:
@@ -1032,7 +1034,8 @@ def compute_fifo(db):
         realized_by_year[year] = realized_by_year.get(year, 0.0) + gain
         sales.append({"date": t["date"], "symbol": sym, "qty": t["quantity"],
                       "proceeds": t["total"], "cost": cost, "gain": gain,
-                      "first_acquired": first_acq or ""})
+                      "first_acquired": first_acq or "",
+                      "lots": sale_lots, "uncovered": max(remaining, 0.0)})
     open_cost = {s: sum(q * c for q, c, _ in L) for s, L in lots.items()}
     return realized_by_year, open_cost, sales
 
@@ -1126,6 +1129,58 @@ def api_export_realized():
                     "%.2f" % s["proceeds"], "%.2f" % s["cost"],
                     "%.2f" % s["gain"], s["first_acquired"]])
     name = "realized-gains{}.csv".format("-" + year if year else "-all")
+    return Response(buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=" + name})
+
+
+def _is_long_term(acquired, sold):
+    """IRS holding period: long-term means held MORE than one year — strictly
+    after the acquisition date's first anniversary (Feb 29 rolls to Mar 1)."""
+    a = date.fromisoformat(acquired[:10])
+    s = date.fromisoformat(sold[:10])
+    try:
+        anniversary = a.replace(year=a.year + 1)
+    except ValueError:                     # Feb 29 in a non-leap year
+        anniversary = a.replace(year=a.year + 1, month=3, day=1)
+    return s > anniversary
+
+
+@app.route("/api/export/tax8949")
+def api_export_tax8949():
+    """Form-8949-style export: one row per FIFO lot consumed by each sale,
+    with per-lot acquisition dates and the short/long-term split. Proceeds are
+    prorated across lots by quantity so per-lot gain sums to the sale's gain."""
+    year = request.args.get("year", "").strip()
+    _, _, sales = compute_fifo(get_db())
+    rows = [s for s in sales if not year or s["date"].startswith(year)]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Description", "Date Acquired", "Date Sold", "Term",
+                "Proceeds USD", "Cost Basis USD", "Gain/Loss USD", "Note"])
+    tot = {"Short": [0.0, 0.0], "Long": [0.0, 0.0]}   # [proceeds, cost]
+    for s in rows:
+        for take, unit_cost, acquired in s["lots"]:
+            proceeds = s["proceeds"] * (take / s["qty"]) if s["qty"] else 0.0
+            basis = take * unit_cost
+            term = "Long" if _is_long_term(acquired, s["date"]) else "Short"
+            tot[term][0] += proceeds
+            tot[term][1] += basis
+            w.writerow(["%.10g %s" % (take, s["symbol"].upper()), acquired,
+                        s["date"], term, "%.2f" % proceeds, "%.2f" % basis,
+                        "%.2f" % (proceeds - basis), ""])
+        if s["uncovered"] > 1e-12:
+            proceeds = s["proceeds"] * (s["uncovered"] / s["qty"]) if s["qty"] else 0.0
+            tot["Short"][0] += proceeds
+            w.writerow(["%.10g %s" % (s["uncovered"], s["symbol"].upper()),
+                        "UNKNOWN", s["date"], "Short", "%.2f" % proceeds,
+                        "0.00", "%.2f" % proceeds,
+                        "no recorded buy lot (transfer/reward) - zero basis"])
+    w.writerow([])
+    for term in ("Short", "Long"):
+        p, c = tot[term]
+        w.writerow(["TOTAL %s-term" % term.upper(), "", "", term,
+                    "%.2f" % p, "%.2f" % c, "%.2f" % (p - c), ""])
+    name = "tax-8949{}.csv".format("-" + year if year else "-all")
     return Response(buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=" + name})
 

@@ -496,10 +496,13 @@
     </div>
     <div class="panel">
       <h2>Tax Report</h2>
-      <p class="hint">FIFO realized gains, one row per sale — ready for your accountant.</p>
+      <p class="hint">FIFO realized gains, any year. <b>Summary</b>: one row per sale.
+      <b>Form 8949</b>: one row per lot, with per-lot acquisition dates and the
+      short/long-term split — what a tax preparer actually needs.</p>
       <div class="form-actions">
         <select id="tax-year"></select>
-        <button type="button" class="primary" id="tax-dl">Download CSV</button>
+        <button type="button" class="primary" id="tax-dl">Summary CSV</button>
+        <button type="button" class="primary" id="tax-8949-dl">Form 8949 CSV</button>
       </div>
     </div>
     <div class="panel">

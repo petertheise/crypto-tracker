@@ -1351,6 +1351,10 @@ $("#tax-dl").addEventListener("click", () => {
   const y = $("#tax-year").value;
   location.href = "/api/export/realized" + (y === "all" ? "" : "?year=" + y);
 });
+$("#tax-8949-dl").addEventListener("click", () => {
+  const y = $("#tax-year").value;
+  location.href = "/api/export/tax8949" + (y === "all" ? "" : "?year=" + y);
+});
 
 /* ---------------------------------------------------------------- to-do list */
 async function loadTodos() {
