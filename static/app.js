@@ -36,6 +36,13 @@ const pctClass = (v) => (v === null || v === undefined) ? "" : v >= 0 ? "pos" : 
 const PALETTE = ["#f5a623","#4aa3ff","#2ecc71","#e74c3c","#9b59b6","#1abc9c","#e67e22","#f1c40f",
                  "#3498db","#e91e63","#00bcd4","#8bc34a","#ff7043","#7986cb","#26a69a","#d4e157"];
 Chart.defaults.color = "#8b98a9";
+if (window.matchMedia("(max-width: 640px)").matches) {
+  // phones: slimmer legends leave more room for the plot itself
+  Chart.defaults.plugins.legend.labels.boxWidth = 16;
+  Chart.defaults.plugins.legend.labels.boxHeight = 10;
+  Chart.defaults.plugins.legend.labels.padding = 8;
+  Chart.defaults.font.size = 10;
+}
 Chart.defaults.borderColor = "#2a3442";
 
 let state = { portfolio: null, coins: [], charts: {}, pfDays: 365, coinDays: 365, fngDays: 30 };
@@ -432,6 +439,7 @@ function renderPfChart() {
     type: "line",
     data: { labels: data.map((d) => d.date), datasets },
     options: {
+      maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${fmtUSD(c.parsed.y, 0)}` } } },
       scales: { y: { ticks: { callback: (v) => fmtUSD(v, 0) } },

@@ -151,3 +151,82 @@ details.collapse summary:hover { color: var(--accent); }
 
 /* daily/weekly change cells: percentage sits under the dollar amount */
 #stk-table td .sub, #stk-accts td .sub { font-size: 11px; margin-top: 1px; }
+
+/* portfolio value chart: fixed height so it can grow on small screens */
+.chart-box.pf-box { height: 330px; }
+
+/* ============================================================
+   PHONE LAYOUT (<= 640px) — desktop view is unaffected
+   ============================================================ */
+@media (max-width: 640px) {
+  /* header: let the tabs wrap onto their own rows instead of scrolling sideways */
+  header { gap: 8px 12px; padding: 8px 12px; }
+  header h1 { font-size: 17px; width: 100%; }
+  header h1 .logo { height: 26px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; order: 3; }
+  .tab { padding: 7px 11px; font-size: 13px; flex: 1 1 auto; }
+  #asof { margin-left: 0; order: 1; font-size: 11px; flex: 1 1 60%; }
+  #logout { order: 2; }
+
+  main { padding: 12px 10px 40px; }
+  .panel { padding: 12px 12px; border-radius: 10px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .card { padding: 10px 12px; }
+  .card .value { font-size: 18px; }
+
+  /* taller charts: portrait screens squash them otherwise */
+  .chart-box.pf-box { height: 400px; }
+  .chart-box { height: 300px; }
+  .chart-box.tall { height: 360px; }
+  .chart-box.short { height: 200px; }
+
+  /* tables: scroll inside their panel, never widen the page */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { font-size: 12.5px; }
+  th, td { padding: 6px 7px; }
+
+  /* let header labels wrap so long titles don't force wide columns */
+  th { white-space: normal; }
+
+  /* trim the least-essential columns so the important ones fit without scrolling */
+  /* Holdings: hide Category, Quantity, Cold, Avg Cost, 7d, Net Cost */
+  #holdings-table th:nth-child(2), #holdings-table td:nth-child(2),
+  #holdings-table th:nth-child(3), #holdings-table td:nth-child(3),
+  #holdings-table th:nth-child(4), #holdings-table td:nth-child(4),
+  #holdings-table th:nth-child(5), #holdings-table td:nth-child(5),
+  #holdings-table th:nth-child(8), #holdings-table td:nth-child(8),
+  #holdings-table th:nth-child(10), #holdings-table td:nth-child(10),
+  #holdings-table th:nth-child(11), #holdings-table td:nth-child(11) { display: none; }
+
+  /* Rebalance: hide Value and Target $ (the action column is what matters) */
+  #rebal-table th:nth-child(2), #rebal-table td:nth-child(2),
+  #rebal-table th:nth-child(5), #rebal-table td:nth-child(5) { display: none; }
+  .rebal-in { width: 60px; }
+
+  /* Best & Worst: hide Spent */
+  #bw-table th:nth-child(3), #bw-table td:nth-child(3) { display: none; }
+
+  /* Yearly Activity: hide Net In (derivable from the other columns) */
+  #yearly-table th:nth-child(4), #yearly-table td:nth-child(4) { display: none; }
+
+  /* Stocks by-portfolio: hide Invested and Income */
+  #stk-accts th:nth-child(5), #stk-accts td:nth-child(5),
+  #stk-accts th:nth-child(7), #stk-accts td:nth-child(7) { display: none; }
+
+  /* Stocks holdings: hide long Name, Portfolio, Quantity, Invested, Income */
+  #stk-table th:nth-child(1), #stk-table td:nth-child(1),
+  #stk-table th:nth-child(3), #stk-table td:nth-child(3),
+  #stk-table th:nth-child(4), #stk-table td:nth-child(4),
+  #stk-table th:nth-child(9), #stk-table td:nth-child(9),
+  #stk-table th:nth-child(11), #stk-table td:nth-child(11) { display: none; }
+
+  /* transactions: keep notes readable without a huge min-width */
+  #tx-table td.tx-notes { min-width: 150px; max-width: 220px; }
+
+  /* forms stack cleanly */
+  .tx-form { grid-template-columns: 1fr 1fr; }
+  .tx-form label.wide { grid-column: span 2; }
+  .range-btns { margin-left: 0; flex-wrap: wrap; }
+  .panel-head { gap: 8px; }
+  .panel h2 { flex-wrap: wrap; gap: 8px; }
+}

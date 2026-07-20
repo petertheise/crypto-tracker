@@ -45,7 +45,7 @@
           <button class="active" data-days="365">1Y</button>
         </div>
       </div>
-      <canvas id="pf-chart" height="90"></canvas>
+      <div class="chart-box pf-box"><canvas id="pf-chart"></canvas></div>
     </div>
     <div class="panel">
       <h2>Drawdown <span class="hint-inline" id="dd-now"></span></h2>
@@ -81,6 +81,7 @@
         <label class="toggle"><input type="checkbox" id="show-closed"> show closed positions</label>
         <label class="toggle"><input type="checkbox" id="hide-dust"> hide dust (under $5)</label>
       </h2>
+      <div class="table-scroll">
       <table id="holdings-table">
         <thead><tr>
           <th>Coin</th><th>Category</th><th class="r">Quantity</th><th class="r">Cold</th><th class="r">Avg Cost</th>
@@ -89,9 +90,11 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      </div>
     </div>
     <div class="panel">
       <h2>Rebalance Preview <span class="hint-inline">set target % per coin — nothing is traded, this only shows the math</span></h2>
+      <div class="table-scroll">
       <table id="rebal-table">
         <thead><tr>
           <th>Coin</th><th class="r">Value</th><th class="r">Current %</th>
@@ -99,6 +102,7 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      </div>
       <div class="form-actions" style="margin-top:12px">
         <button type="button" class="small" id="rebal-current">Set targets to current</button>
         <button type="button" class="small" id="rebal-equal">Equal weight</button>
@@ -111,25 +115,31 @@
       <div class="panel">
         <h2>Break-Even <span class="hint-inline">what price gets each position back to green</span></h2>
         <p class="hint" id="be-note"></p>
+        <div class="table-scroll">
         <table id="be-table">
           <thead><tr><th>Coin</th><th class="r">Price Now</th><th class="r">Break-Even</th><th class="r">Move Needed</th></tr></thead>
           <tbody></tbody>
         </table>
+        </div>
       </div>
       <div class="panel">
         <h2>Best &amp; Worst Buys <span class="hint-inline">live, entries over $5</span></h2>
+        <div class="table-scroll">
         <table id="bw-table">
           <thead><tr><th>Date</th><th>Coin</th><th class="r">Spent</th><th class="r">Worth Now</th><th class="r">Return</th></tr></thead>
           <tbody></tbody>
         </table>
+        </div>
       </div>
     </div>
     <div class="panel">
       <h2>Yearly Activity</h2>
+      <div class="table-scroll">
       <table id="yearly-table">
         <thead><tr><th>Year</th><th class="r">Invested (buys)</th><th class="r">Proceeds (sells)</th><th class="r">Net In</th><th class="r">Realized P/L (FIFO)</th></tr></thead>
         <tbody></tbody>
       </table>
+      </div>
     </div>
   </section>
 
@@ -241,10 +251,12 @@
     <div class="two-col">
       <div class="panel">
         <h2>By Portfolio</h2>
+        <div class="table-scroll">
         <table id="stk-accts">
           <thead><tr><th>Portfolio</th><th class="r">Value</th><th class="r">Today</th><th class="r">Week</th><th class="r">Invested</th><th class="r">Gain</th><th class="r">Income/yr</th></tr></thead>
           <tbody></tbody>
         </table>
+        </div>
       </div>
       <div class="panel"><h2>Portfolio Split</h2><canvas id="stk-acct-donut"></canvas></div>
     </div>
