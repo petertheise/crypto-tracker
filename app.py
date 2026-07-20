@@ -37,7 +37,7 @@ app.config.update(SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_HTTPONLY=True)
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
+        g.db = sqlite3.connect(DB_PATH, timeout=10)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
     return g.db
@@ -142,7 +142,10 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=10)
+    # WAL: three background writer threads + threaded requests share this file;
+    # without it a colliding commit raises 'database is locked'.
+    db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     # secret key for session cookies, generated once
     if not db.execute("SELECT 1 FROM settings WHERE key='secret_key'").fetchone():
@@ -153,7 +156,7 @@ def init_db():
 
 
 def get_setting(key):
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=10)
     row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     db.close()
     return row[0] if row else None
@@ -426,7 +429,7 @@ def get_market_data():
         "/coins/markets",
         {"vs_currency": "usd", "ids": ",".join(ids), "price_change_percentage": "1h,24h,7d,30d,1y"},
         cache_key="markets:" + ",".join(sorted(ids)),
-        ttl=90,
+        ttl=150,  # > the 120s dashboard poll, so ticks hit cache instead of CoinGecko
     )
     return {row["id"]: row for row in data}
 
@@ -1079,7 +1082,7 @@ BACKUP_DIR = (os.path.join(_icloud, "Crypto Tracker Backups")
 def do_backup():
     os.makedirs(BACKUP_DIR, exist_ok=True)
     dest = os.path.join(BACKUP_DIR, "portfolio-{}.db".format(datetime.now().strftime("%Y%m%d-%H%M%S")))
-    src = sqlite3.connect(DB_PATH)
+    src = sqlite3.connect(DB_PATH, timeout=10)
     dst = sqlite3.connect(dest)
     src.backup(dst)  # consistent snapshot even while the app is writing
     dst.close()
@@ -1095,8 +1098,8 @@ def backup_loop():
     while True:
         try:
             do_backup()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[backup_loop] failed: {e!r}", flush=True)
         time.sleep(86400)  # daily
 
 
@@ -1668,7 +1671,7 @@ def alerts_loop():
     when a threshold is crossed, then deactivate that alert."""
     while True:
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=10)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT a.*, c.coingecko_id FROM alerts a JOIN coins c ON c.symbol=a.symbol "
@@ -1692,8 +1695,8 @@ def alerts_loop():
                                      (datetime.now().strftime("%Y-%m-%d %H:%M"), r["id"]))
                 conn.commit()
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[alerts_loop] failed: {e!r}", flush=True)
         time.sleep(300)
 
 
@@ -1852,11 +1855,11 @@ def cb_sync_loop():
     while True:
         time.sleep(6 * 3600)  # every 6 hours
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, timeout=10)
             coinbase_sync(conn)
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[cb_sync_loop] failed: {e!r}", flush=True)
 
 
 @app.route("/api/coinbase/status")
