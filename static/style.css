@@ -148,3 +148,6 @@ details.collapse summary:hover { color: var(--accent); }
 
 /* transactions: notes get the space freed by fee/exchange columns */
 #tx-table td.tx-notes { white-space: normal; min-width: 260px; max-width: 480px; color: var(--muted); }
+
+/* daily/weekly change cells: percentage sits under the dollar amount */
+#stk-table td .sub, #stk-accts td .sub { font-size: 11px; margin-top: 1px; }

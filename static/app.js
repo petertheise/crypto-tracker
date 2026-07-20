@@ -786,9 +786,15 @@ async function loadStocks() {
   $("#stk-cards").innerHTML = `
     <div class="card"><div class="label">Stock Portfolio</div>
       <div class="value">${fmtUSD(s.total_value, 2)}</div></div>
+    <div class="card"><div class="label">Today</div>
+      <div class="value ${pctClass(s.day_change)}">${fmtUSD(s.day_change, 2)}</div>
+      <div class="sub ${pctClass(s.day_change)}">${fmtPct(s.day_pct)}</div></div>
+    <div class="card"><div class="label">This Week</div>
+      <div class="value ${pctClass(s.week_change)}">${fmtUSD(s.week_change, 2)}</div>
+      <div class="sub ${pctClass(s.week_change)}">${fmtPct(s.week_pct)}</div></div>
     <div class="card"><div class="label">Invested</div>
       <div class="value">${fmtUSD(s.total_invested, 2)}</div></div>
-    <div class="card"><div class="label">Gain</div>
+    <div class="card"><div class="label">Total Gain</div>
       <div class="value ${gc}">${fmtUSD(s.total_gain, 2)}</div>
       <div class="sub ${gc}">${fmtPct(gainPct)}</div></div>
     <div class="card"><div class="label">Est. Annual Income</div>
@@ -800,6 +806,8 @@ async function loadStocks() {
     <tr>
       <td>${esc(a.account)}</td>
       <td class="r">${fmtUSD(a.value, 2)}</td>
+      <td class="r ${pctClass(a.day_change)}">${fmtUSD(a.day_change, 2)}<div class="sub ${pctClass(a.day_change)}">${fmtPct(a.day_pct)}</div></td>
+      <td class="r ${pctClass(a.week_change)}">${fmtUSD(a.week_change, 2)}<div class="sub ${pctClass(a.week_change)}">${fmtPct(a.week_pct)}</div></td>
       <td class="r">${fmtUSD(a.invested, 2)}</td>
       <td class="r ${pctClass(a.gain)}">${fmtUSD(a.gain, 2)}</td>
       <td class="r">${a.income ? fmtUSD(a.income, 0) : "—"}</td>
@@ -832,9 +840,10 @@ async function loadStocks() {
 function aggregateStocks(holdings) {
   const agg = {};
   for (const h of holdings) {
-    const a = agg[h.symbol] || (agg[h.symbol] = { ...h, quantity: 0, value: 0, invested: 0, income: 0, gain: 0, n: 0 });
+    const a = agg[h.symbol] || (agg[h.symbol] = { ...h, quantity: 0, value: 0, invested: 0, income: 0, gain: 0, day_change: 0, week_change: 0, n: 0 });
     a.quantity += h.quantity; a.value += h.value; a.invested += h.invested;
     a.income += h.income; a.gain += h.gain; a.n += 1;
+    a.day_change += h.day_change || 0; a.week_change += h.week_change || 0;
   }
   return Object.values(agg).map((a) => ({ ...a,
     gain_pct: a.invested ? (a.gain / a.invested) * 100 : null,
@@ -857,6 +866,8 @@ function renderStockHoldings() {
       <td class="r">${fmtNum(h.quantity)}</td>
       <td class="r">${fmtUSD(h.price)}${h.live ? "" : " *"}</td>
       <td class="r">${fmtUSD(h.value, 2)}</td>
+      <td class="r ${pctClass(h.day_change)}">${fmtUSD(h.day_change, 2)}<div class="sub ${pctClass(h.day_change)}">${fmtPct(h.day_pct)}</div></td>
+      <td class="r ${pctClass(h.week_change)}">${fmtUSD(h.week_change, 2)}<div class="sub ${pctClass(h.week_change)}">${fmtPct(h.week_pct)}</div></td>
       <td class="r">${fmtUSD(h.invested, 2)}</td>
       <td class="r ${pctClass(h.gain)}">${fmtUSD(h.gain, 2)}</td>
       <td class="r ${pctClass(h.gain)}">${fmtPct(h.gain_pct)}</td>

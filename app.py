@@ -1437,29 +1437,49 @@ def parse_rjf_csv(text):
     return out
 
 
-def yahoo_quote(sym):
-    """Latest price for a stock/fund ticker, cached 15 minutes."""
+def yahoo_snapshot(sym):
+    """Current price plus the previous close and the close ~7 days ago,
+    so the UI can show daily and weekly moves. Cached 15 minutes."""
     if sym == "CASH":
-        return 1.0
+        return {"price": 1.0, "prev": 1.0, "week": 1.0}
     db = get_db()
-    key = "yq:" + sym
+    key = "ys:" + sym
     row = db.execute("SELECT data, updated_at FROM api_cache WHERE key=?", (key,)).fetchone()
     if row and time.time() - row["updated_at"] < 900:
         return json.loads(row["data"])
+    snap = None
     try:
         resp = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/" + sym,
-                            params={"range": "5d", "interval": "1d"},
+                            params={"range": "1mo", "interval": "1d"},
                             headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         resp.raise_for_status()
-        meta = resp.json()["chart"]["result"][0]["meta"]
-        price = meta.get("regularMarketPrice") or meta.get("previousClose")
+        res = resp.json()["chart"]["result"][0]
+        meta = res["meta"]
+        pairs = [(t, c) for t, c in zip(res["timestamp"], res["indicators"]["quote"][0]["close"]) if c]
+        price = meta.get("regularMarketPrice") or (pairs[-1][1] if pairs else None)
+        prev = meta.get("previousClose")
+        if prev is None and len(pairs) >= 2:
+            prev = pairs[-2][1]
+        # last close at or before 7 days ago
+        cutoff = time.time() - 7 * 86400
+        week = next((c for t, c in reversed(pairs) if t <= cutoff), pairs[0][1] if pairs else None)
+        if price:
+            snap = {"price": price, "prev": prev or price, "week": week or price}
     except Exception:
-        price = json.loads(row["data"]) if row else None
-    if price is not None:
+        snap = None
+    if snap is None:
+        snap = json.loads(row["data"]) if row else None
+    if snap is not None:
         db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
-                   (key, json.dumps(price), time.time()))
+                   (key, json.dumps(snap), time.time()))
         db.commit()
-    return price
+    return snap
+
+
+def yahoo_quote(sym):
+    """Latest price only (kept for callers that don't need the deltas)."""
+    snap = yahoo_snapshot(sym)
+    return snap["price"] if snap else None
 
 
 def split_by_account(db, positions):
@@ -1486,38 +1506,63 @@ def split_by_account(db, positions):
 def api_stocks():
     db = get_db()
     rows = db.execute("SELECT * FROM stocks ORDER BY symbol").fetchall()
-    prices = {}
+    snaps = {}
     for r in rows:
-        if r["symbol"] not in prices:
-            prices[r["symbol"]] = yahoo_quote(r["symbol"])
+        if r["symbol"] not in snaps:
+            snaps[r["symbol"]] = yahoo_snapshot(r["symbol"])
     out = []
     accounts = {}
-    totals = {"value": 0.0, "invested": 0.0, "income": 0.0}
+    totals = {"value": 0.0, "invested": 0.0, "income": 0.0, "day": 0.0, "week": 0.0}
     for r in rows:
-        price = prices[r["symbol"]] or r["rj_price"]
-        value = r["quantity"] * price
+        snap = snaps[r["symbol"]]
+        price = (snap or {}).get("price") or r["rj_price"]
+        prev = (snap or {}).get("prev") or price
+        week = (snap or {}).get("week") or price
+        qty = r["quantity"]
+        value = qty * price
+        day_change = qty * (price - prev)
+        week_change = qty * (price - week)
         out.append({"symbol": r["symbol"], "account": r["account"], "name": r["name"],
-                    "type": r["product_type"], "quantity": r["quantity"], "price": price,
+                    "type": r["product_type"], "quantity": qty, "price": price,
                     "value": value, "invested": r["invested"], "gain": value - r["invested"],
                     "gain_pct": ((value - r["invested"]) / r["invested"] * 100) if r["invested"] else None,
-                    "income": r["income"], "live": prices[r["symbol"]] is not None})
+                    "income": r["income"], "live": snap is not None,
+                    "day_change": day_change,
+                    "day_pct": ((price / prev - 1) * 100) if prev else None,
+                    "week_change": week_change,
+                    "week_pct": ((price / week - 1) * 100) if week else None})
         a = accounts.setdefault(r["account"], {"account": r["account"], "value": 0.0,
-                                               "invested": 0.0, "income": 0.0})
+                                               "invested": 0.0, "income": 0.0,
+                                               "day_change": 0.0, "week_change": 0.0})
         a["value"] += value
         a["invested"] += r["invested"]
         a["income"] += r["income"]
+        a["day_change"] += day_change
+        a["week_change"] += week_change
         totals["value"] += value
         totals["invested"] += r["invested"]
         totals["income"] += r["income"]
+        totals["day"] += day_change
+        totals["week"] += week_change
     out.sort(key=lambda x: -x["value"])
     acct_list = sorted(accounts.values(), key=lambda a: -a["value"])
     for a in acct_list:
         a["gain"] = a["value"] - a["invested"]
+        base_d = a["value"] - a["day_change"]
+        base_w = a["value"] - a["week_change"]
+        a["day_pct"] = (a["day_change"] / base_d * 100) if base_d else None
+        a["week_pct"] = (a["week_change"] / base_w * 100) if base_w else None
+    base_d = totals["value"] - totals["day"]
+    base_w = totals["value"] - totals["week"]
     return jsonify({"holdings": out, "accounts": acct_list,
                     "total_value": totals["value"],
                     "total_invested": totals["invested"],
                     "total_gain": totals["value"] - totals["invested"],
                     "total_income": totals["income"],
+                    "day_change": totals["day"],
+                    "day_pct": (totals["day"] / base_d * 100) if base_d else None,
+                    "week_change": totals["week"],
+                    "week_pct": (totals["week"] / base_w * 100) if base_w else None,
                     "as_of": get_setting("stocks_as_of")})
 
 
