@@ -13,3 +13,4 @@ __pycache__/
 
 # machine-local Claude Code config
 .claude/
+HANDOFF.md
