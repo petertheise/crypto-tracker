@@ -95,18 +95,23 @@ async function loadPortfolio() {
     <div class="card"><div class="label">Best 24h Mover</div>
       <div class="value">${best ? esc(best.symbol) : "—"}</div>
       <div class="sub ${best ? pctClass(best.change_24h) : ""}">${best ? fmtPct(best.change_24h) : ""}</div></div>`;
+  // Net Worth is masked by default on every load; click the eye to reveal for this session.
   const addNetWorth = (s) => {
-    if (localStorage.getItem("showNetWorth") === "0") return;
+    const total = p.total_value + s.total_value;
     $("#summary-cards").insertAdjacentHTML("beforeend", `
     <div class="card" id="nw-card"><div class="label">Net Worth
-        <span id="nw-hide" title="Hide this card (turn back on in Settings)" style="cursor:pointer;float:right;color:var(--muted)">✕</span></div>
-      <div class="value">${fmtUSD(p.total_value + s.total_value, 0)}</div>
-      <div class="sub">crypto ${fmtUSD(p.total_value, 0)} + stocks ${fmtUSD(s.total_value, 0)}</div></div>`);
-    $("#nw-hide").addEventListener("click", () => {
-      localStorage.setItem("showNetWorth", "0");
-      $("#nw-card").remove();
-      if ($("#show-networth")) $("#show-networth").checked = false;
-    });
+        <span id="nw-eye" title="Show / hide" style="cursor:pointer;float:right;color:var(--muted)">&#128065;</span></div>
+      <div class="value" id="nw-value">••••••</div>
+      <div class="sub" id="nw-sub">hidden — tap the eye to show</div></div>`);
+    const reveal = (on) => {
+      state.nwShown = on;
+      $("#nw-value").textContent = on ? fmtUSD(total, 0) : "••••••";
+      $("#nw-sub").innerHTML = on
+        ? `crypto ${fmtUSD(p.total_value, 0)} + stocks ${fmtUSD(s.total_value, 0)}`
+        : "hidden — tap the eye to show";
+    };
+    reveal(state.nwShown === true); // stays revealed across refreshes within a session, hidden on a fresh load
+    $("#nw-eye").addEventListener("click", () => reveal(!state.nwShown));
   };
   if (state.stocks) addNetWorth(state.stocks);
   else fetch("/api/stocks").then((r) => r.json())
@@ -1360,11 +1365,6 @@ $("#backup-now").addEventListener("click", async () => {
   msg.className = res.ok ? "pos" : "neg";
   setTimeout(() => (msg.textContent = ""), 4000);
   loadBackupInfo();
-});
-$("#show-networth").checked = localStorage.getItem("showNetWorth") !== "0";
-$("#show-networth").addEventListener("change", () => {
-  localStorage.setItem("showNetWorth", $("#show-networth").checked ? "1" : "0");
-  loadPortfolio(); // re-renders the dashboard cards with or without Net Worth
 });
 $("#tax-dl").addEventListener("click", () => {
   const y = $("#tax-year").value;
