@@ -64,6 +64,51 @@ function makeChart(id, cfg) {
   return state.charts[id];
 }
 
+/* ---------------------------------------------------------------- wiring helpers */
+// range button strips all behave the same: highlight the clicked button, park the
+// day count on state, re-render. rangeDays() also handles data-days="ytd".
+function wireRange(sel, stateKey, onChange) {
+  $(sel).addEventListener("click", (e) => {
+    if (e.target.tagName !== "BUTTON") return;
+    $$(sel + " button").forEach((b) => b.classList.remove("active"));
+    e.target.classList.add("active");
+    state[stateKey] = rangeDays(e.target.dataset.days);
+    onChange();
+  });
+}
+
+// checkbox that remembers itself in localStorage. defaultOn flips the restore test:
+// "not 0" (on unless turned off) vs "is 1" (off unless turned on).
+function wireToggle(elementId, storageKey, defaultOn, onChange) {
+  const el = $("#" + elementId);
+  el.addEventListener("change", () => {
+    localStorage.setItem(storageKey, el.checked ? "1" : "0");
+    onChange();
+  });
+  el.checked = defaultOn
+    ? localStorage.getItem(storageKey) !== "0"
+    : localStorage.getItem(storageKey) === "1";
+}
+
+const getJSON = async (url) => (await fetch(url)).json();
+
+/* ---------------------------------------------------------------- chart options */
+// shared option fragments. Each call returns fresh objects so no two charts share one.
+const usdTicks = (d) => ({ ticks: { callback: (v) => fmtUSD(v, d) } });
+const tip = (label) => ({ callbacks: { label } });
+// shell for the line/bar charts: hover mode, optional legend, one tooltip line
+// formatter, thinned x axis; the y scale is passed in per chart.
+const lineOpts = ({ hover = "index", legend, tooltip, maxX = 10, y }) => ({
+  maintainAspectRatio: false,
+  ...(hover ? { interaction: { mode: hover, intersect: false } } : {}),
+  plugins: { ...(legend ? { legend } : {}), tooltip: tip(tooltip) },
+  scales: { x: { ticks: { maxTicksLimit: maxX } }, y },
+});
+// the four doughnuts are identical: legend on the right, USD tooltip
+const donutOpts = () => ({
+  plugins: { legend: { position: "right" }, tooltip: tip((c) => ` ${c.label}: ${fmtUSD(c.parsed, 0)}`) },
+});
+
 /* ---------------------------------------------------------------- dashboard */
 async function loadPortfolio() {
   const r = await fetch("/api/portfolio");
@@ -154,7 +199,7 @@ function renderBreakEven(p) {
 }
 
 async function loadBestWorst() {
-  const txs = await (await fetch("/api/transactions")).json();
+  const txs = await getJSON("/api/transactions");
   const prices = {};
   (state.portfolio?.holdings || []).forEach((h) => { prices[h.symbol.toLowerCase()] = h.price; });
   const buys = txs
@@ -286,15 +331,14 @@ function renderPLChart(holdings) {
     options: {
       indexAxis: "y",
       maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: (c) => " " + fmtUSD(c.parsed.x, 2) } } },
-      scales: { x: { ticks: { callback: (v) => fmtUSD(v, 0) } } },
+      plugins: { legend: { display: false }, tooltip: tip((c) => " " + fmtUSD(c.parsed.x, 2)) },
+      scales: { x: usdTicks(0) },
     },
   });
 }
 
 async function loadMonthlyChart() {
-  const rows = await (await fetch("/api/history/monthly")).json();
+  const rows = await getJSON("/api/history/monthly");
   makeChart("#monthly-chart", {
     type: "bar",
     data: {
@@ -306,19 +350,15 @@ async function loadMonthlyChart() {
           backgroundColor: "rgba(231,76,60,.8)", stack: "s" },
       ],
     },
-    options: {
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { tooltip: { callbacks: { label: (c) =>
-        ` ${c.dataset.label}: ${fmtUSD(Math.abs(c.parsed.y), 2)}` } } },
-      scales: { x: { ticks: { maxTicksLimit: 12 } },
-                y: { ticks: { callback: (v) => fmtUSD(v, 0) } } },
-    },
+    options: lineOpts({
+      tooltip: (c) => ` ${c.dataset.label}: ${fmtUSD(Math.abs(c.parsed.y), 2)}`,
+      maxX: 12, y: usdTicks(0),
+    }),
   });
 }
 
 async function loadAllocationHistory() {
-  const d = await (await fetch("/api/history/allocation?days=" + (state.allocDays || 365))).json();
+  const d = await getJSON("/api/history/allocation?days=" + (state.allocDays || 365));
   makeChart("#alloc-time-chart", {
     type: "line",
     data: {
@@ -330,23 +370,13 @@ async function loadAllocationHistory() {
           pointRadius: 0, borderWidth: 1, tension: .2 };
       }),
     },
-    options: {
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { tooltip: { callbacks: { label: (c) =>
-        ` ${c.dataset.label}: ${fmtUSD(c.parsed.y, 0)}` } } },
-      scales: { x: { ticks: { maxTicksLimit: 10 } },
-                y: { stacked: true, min: 0, ticks: { callback: (v) => fmtUSD(v, 0) } } },
-    },
+    options: lineOpts({
+      tooltip: (c) => ` ${c.dataset.label}: ${fmtUSD(c.parsed.y, 0)}`,
+      y: { stacked: true, min: 0, ...usdTicks(0) },
+    }),
   });
 }
-$("#alloc-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#alloc-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.allocDays = +e.target.dataset.days;
-  loadAllocationHistory();
-});
+wireRange("#alloc-range", "allocDays", loadAllocationHistory);
 
 function renderHoldings() {
   const showClosed = $("#show-closed").checked;
@@ -371,11 +401,7 @@ function renderHoldings() {
     </tr>`).join("");
 }
 $("#show-closed").addEventListener("change", renderHoldings);
-$("#hide-dust").addEventListener("change", () => {
-  localStorage.setItem("hideDust", $("#hide-dust").checked ? "1" : "0");
-  renderHoldings();
-});
-$("#hide-dust").checked = localStorage.getItem("hideDust") === "1";
+wireToggle("hide-dust", "hideDust", false, renderHoldings);
 
 function renderYearly(years) {
   $("#yearly-table tbody").innerHTML = years.map((y) => {
@@ -394,8 +420,7 @@ function renderAllocation(active) {
     type: "doughnut",
     data: { labels: byCoin.map((h) => h.symbol),
       datasets: [{ data: byCoin.map((h) => h.value), backgroundColor: PALETTE, borderWidth: 0 }] },
-    options: { plugins: { legend: { position: "right" },
-      tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtUSD(c.parsed, 0)}` } } } },
+    options: donutOpts(),
   });
   const cats = {};
   active.forEach((h) => { if (h.value > 0) cats[h.category] = (cats[h.category] || 0) + h.value; });
@@ -404,8 +429,7 @@ function renderAllocation(active) {
     type: "doughnut",
     data: { labels: names,
       datasets: [{ data: names.map((n) => cats[n]), backgroundColor: PALETTE.slice(4), borderWidth: 0 }] },
-    options: { plugins: { legend: { position: "right" },
-      tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtUSD(c.parsed, 0)}` } } } },
+    options: donutOpts(),
   });
 }
 
@@ -443,35 +467,16 @@ function renderPfChart() {
   makeChart("#pf-chart", {
     type: "line",
     data: { labels: data.map((d) => d.date), datasets },
-    options: {
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${fmtUSD(c.parsed.y, 0)}` } } },
-      scales: { y: { ticks: { callback: (v) => fmtUSD(v, 0) } },
-                x: { ticks: { maxTicksLimit: 10 } } },
-    },
+    options: lineOpts({
+      tooltip: (c) => ` ${c.dataset.label}: ${fmtUSD(c.parsed.y, 0)}`,
+      y: usdTicks(0),
+    }),
   });
 }
-$("#show-bench").addEventListener("change", () => {
-  localStorage.setItem("showBench", $("#show-bench").checked ? "1" : "0");
-  renderPfChart();
-});
-$("#show-bench").checked = localStorage.getItem("showBench") !== "0";
-$("#show-bench-eth").addEventListener("change", () => {
-  localStorage.setItem("showBenchEth", $("#show-bench-eth").checked ? "1" : "0");
-  renderPfChart();
-});
-$("#show-bench-eth").checked = localStorage.getItem("showBenchEth") !== "0";
-$("#show-bench-spx").addEventListener("change", () => {
-  localStorage.setItem("showBenchSpx", $("#show-bench-spx").checked ? "1" : "0");
-  renderPfChart();
-});
-$("#show-bench-spx").checked = localStorage.getItem("showBenchSpx") !== "0";
-$("#show-bench-ndq").addEventListener("change", () => {
-  localStorage.setItem("showBenchNdq", $("#show-bench-ndq").checked ? "1" : "0");
-  renderPfChart();
-});
-$("#show-bench-ndq").checked = localStorage.getItem("showBenchNdq") !== "0";
+wireToggle("show-bench", "showBench", true, renderPfChart);
+wireToggle("show-bench-eth", "showBenchEth", true, renderPfChart);
+wireToggle("show-bench-spx", "showBenchSpx", true, renderPfChart);
+wireToggle("show-bench-ndq", "showBenchNdq", true, renderPfChart);
 
 function renderDrawdown(data) {
   let peak = 0;
@@ -487,22 +492,14 @@ function renderDrawdown(data) {
     data: { labels: data.map((d) => d.date),
       datasets: [{ data: dd, borderColor: "#e74c3c", backgroundColor: "rgba(231,76,60,.18)",
         fill: true, pointRadius: 0, tension: .2, borderWidth: 1.5 }] },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: (c) => " " + c.parsed.y.toFixed(1) + "%" } } },
-      scales: { y: { max: 0, ticks: { callback: (v) => v + "%" } },
-                x: { ticks: { maxTicksLimit: 10 } } },
-    },
+    options: lineOpts({
+      hover: null, legend: { display: false },
+      tooltip: (c) => " " + c.parsed.y.toFixed(1) + "%",
+      y: { max: 0, ticks: { callback: (v) => v + "%" } },
+    }),
   });
 }
-$("#pf-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#pf-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.pfDays = +e.target.dataset.days;
-  loadPortfolioHistory();
-});
+wireRange("#pf-range", "pfDays", loadPortfolioHistory);
 
 /* ---------------------------------------------------------------- transactions */
 async function loadCoins() {
@@ -647,7 +644,7 @@ $("#tx-form").addEventListener("submit", async (e) => {
 
 /* ---------------------------------------------------------------- cold storage transfers */
 async function loadTransfers() {
-  const rows = await (await fetch("/api/transfers")).json();
+  const rows = await getJSON("/api/transfers");
   $("#tf-table tbody").innerHTML = rows.map((t) => `
     <tr>
       <td>${esc(t.date)}</td>
@@ -773,16 +770,7 @@ async function loadCoinChart() {
   }
 }
 $("#chart-coin").addEventListener("change", loadCoinChart);
-$("#coin-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#coin-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  const d = e.target.dataset.days;
-  state.coinDays = d === "ytd"
-    ? Math.max(2, Math.ceil((Date.now() - new Date(new Date().getFullYear(), 0, 1)) / 86400000))
-    : +d;
-  loadCoinChart();
-});
+wireRange("#coin-range", "coinDays", loadCoinChart);
 
 /* ---------------------------------------------------------------- stocks */
 function rangeDays(d) {
@@ -792,7 +780,7 @@ function rangeDays(d) {
 }
 async function loadStocks() {
   state.stocksLoaded = true;
-  const s = await (await fetch("/api/stocks")).json();
+  const s = await getJSON("/api/stocks");
   state.stocks = s;
   const gc = pctClass(s.total_gain);
   const gainPct = s.total_invested ? (s.total_gain / s.total_invested) * 100 : null;
@@ -829,8 +817,7 @@ async function loadStocks() {
     type: "doughnut",
     data: { labels: s.accounts.map((a) => a.account),
       datasets: [{ data: s.accounts.map((a) => a.value), backgroundColor: PALETTE, borderWidth: 0 }] },
-    options: { plugins: { legend: { position: "right" },
-      tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtUSD(c.parsed, 0)}` } } } },
+    options: donutOpts(),
   });
   // portfolio filter (populate once)
   const filt = $("#stk-acct-filter");
@@ -845,8 +832,7 @@ async function loadStocks() {
     type: "doughnut",
     data: { labels: top.map((h) => h.symbol),
       datasets: [{ data: top.map((h) => h.value), backgroundColor: PALETTE, borderWidth: 0 }] },
-    options: { plugins: { legend: { position: "right" },
-      tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtUSD(c.parsed, 0)}` } } } },
+    options: donutOpts(),
   });
 }
 
@@ -891,25 +877,23 @@ $("#stk-acct-filter").addEventListener("change", renderStockHoldings);
 
 async function loadStocksHistory() {
   const days = state.stkDays || 365;
-  const d = await (await fetch("/api/history/stocks?days=" + days)).json();
+  const d = await getJSON("/api/history/stocks?days=" + days);
   makeChart("#stk-chart", {
     type: "line",
     data: { labels: d.points.map((p) => p.date),
       datasets: [{ label: "Positions value", data: d.points.map((p) => p.value),
         borderColor: "#2ecc71", backgroundColor: "rgba(46,204,113,.08)",
         fill: true, pointRadius: 0, tension: .2, borderWidth: 2 }] },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: (c) => " " + fmtUSD(c.parsed.y, 0) } } },
-      scales: { y: { ticks: { callback: (v) => fmtUSD(v, 0) } },
-                x: { ticks: { maxTicksLimit: 10 } } },
-    },
+    options: lineOpts({
+      hover: null, legend: { display: false },
+      tooltip: (c) => " " + fmtUSD(c.parsed.y, 0),
+      y: usdTicks(0),
+    }),
   });
 }
 async function loadStocksEach() {
   const days = state.stkeDays || 365;
-  const d = await (await fetch("/api/history/stocks/each?days=" + days)).json();
+  const d = await getJSON("/api/history/stocks/each?days=" + days);
   makeChart("#stke-chart", {
     type: "line",
     data: {
@@ -924,33 +908,15 @@ async function loadStocksEach() {
         };
       }),
     },
-    options: {
-      maintainAspectRatio: false,
-      interaction: { mode: "nearest", intersect: false },
-      plugins: {
-        legend: { position: "bottom" },
-        tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${fmtPct(c.parsed.y)}` } },
-      },
-      scales: { y: { ticks: { callback: (v) => (v >= 0 ? "+" : "") + v + "%" } },
-                x: { ticks: { maxTicksLimit: 10 } } },
-    },
+    options: lineOpts({
+      hover: "nearest", legend: { position: "bottom" },
+      tooltip: (c) => ` ${c.dataset.label}: ${fmtPct(c.parsed.y)}`,
+      y: { ticks: { callback: (v) => (v >= 0 ? "+" : "") + v + "%" } },
+    }),
   });
 }
-$("#stke-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#stke-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.stkeDays = rangeDays(e.target.dataset.days);
-  loadStocksEach();
-});
-
-$("#stk-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#stk-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.stkDays = rangeDays(e.target.dataset.days);
-  loadStocksHistory();
-});
+wireRange("#stke-range", "stkeDays", loadStocksEach);
+wireRange("#stk-range", "stkDays", loadStocksHistory);
 $("#stk-upload").addEventListener("click", async () => {
   const msg = $("#stk-msg");
   const f = $("#stk-file").files[0];
@@ -1072,13 +1038,7 @@ function renderFngChart() {
     },
   });
 }
-$("#fng-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#fng-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.fngDays = +e.target.dataset.days;
-  renderFngChart();
-});
+wireRange("#fng-range", "fngDays", renderFngChart);
 
 function movingAvg(vals, w) {
   const out = new Array(vals.length).fill(null);
@@ -1112,23 +1072,13 @@ function renderBtcMA() {
           borderDash: [2, 3], pointRadius: 0, borderWidth: 1.5, tension: .2 },
       ],
     },
-    options: {
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { tooltip: { callbacks: { label: (c) =>
-        ` ${c.dataset.label}: ${c.parsed.y != null ? fmtUSD(c.parsed.y, 0) : "—"}` } } },
-      scales: { y: { ticks: { callback: (v) => fmtUSD(v, 0) } },
-                x: { ticks: { maxTicksLimit: 8 } } },
-    },
+    options: lineOpts({
+      tooltip: (c) => ` ${c.dataset.label}: ${c.parsed.y != null ? fmtUSD(c.parsed.y, 0) : "—"}`,
+      maxX: 8, y: usdTicks(0),
+    }),
   });
 }
-$("#btcma-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#btcma-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.btcMaDays = +e.target.dataset.days;
-  renderBtcMA();
-});
+wireRange("#btcma-range", "btcMaDays", renderBtcMA);
 
 function renderStabChart() {
   if (!state.stabRows || !state.stabRows.length) return;
@@ -1140,50 +1090,34 @@ function renderStabChart() {
       datasets: [{ label: "Total stablecoin market cap", data: rows.map((r) => r.mcap),
         borderColor: "#1abc9c", backgroundColor: "rgba(26,188,156,.12)",
         fill: true, pointRadius: 0, borderWidth: 2, tension: .2 }] },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: (c) => " " + fmtUSD(c.parsed.y / 1e9, 1) + "B" } } },
-      scales: { y: { ticks: { callback: (v) => fmtUSD(v / 1e9, 0) + "B" } },
-                x: { ticks: { maxTicksLimit: 8 } } },
-    },
+    options: lineOpts({
+      hover: null, legend: { display: false },
+      tooltip: (c) => " " + fmtUSD(c.parsed.y / 1e9, 1) + "B",
+      maxX: 8, y: { ticks: { callback: (v) => fmtUSD(v / 1e9, 0) + "B" } },
+    }),
   });
 }
-$("#stab-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#stab-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.stabDays = +e.target.dataset.days;
-  renderStabChart();
-});
+wireRange("#stab-range", "stabDays", renderStabChart);
 
 async function loadRatioChart() {
   const days = state.ratioDays || 1095;
-  const rows = await (await fetch("/api/history/ratio?days=" + days)).json();
+  const rows = await getJSON("/api/history/ratio?days=" + days);
   makeChart("#ratio-chart", {
     type: "line",
     data: { labels: rows.map((r) => r.date),
       datasets: [{ data: rows.map((r) => r.ratio), borderColor: "#9b59b6",
         backgroundColor: "rgba(155,89,182,.10)", fill: true, pointRadius: 0, borderWidth: 2, tension: .2 }] },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: (c) => " " + c.parsed.y.toFixed(5) + " BTC per ETH" } } },
-      scales: { y: { ticks: { callback: (v) => v.toFixed(3) } },
-                x: { ticks: { maxTicksLimit: 8 } } },
-    },
+    options: lineOpts({
+      hover: null, legend: { display: false },
+      tooltip: (c) => " " + c.parsed.y.toFixed(5) + " BTC per ETH",
+      maxX: 8, y: { ticks: { callback: (v) => v.toFixed(3) } },
+    }),
   });
 }
-$("#ratio-range").addEventListener("click", (e) => {
-  if (e.target.tagName !== "BUTTON") return;
-  $$("#ratio-range button").forEach((b) => b.classList.remove("active"));
-  e.target.classList.add("active");
-  state.ratioDays = +e.target.dataset.days;
-  loadRatioChart();
-});
+wireRange("#ratio-range", "ratioDays", loadRatioChart);
 
 async function loadDominance() {
-  const rows = await (await fetch("/api/history/dominance")).json();
+  const rows = await getJSON("/api/history/dominance");
   const note = $("#dom-note");
   if (rows.length < 2) {
     note.classList.remove("hidden");
@@ -1198,18 +1132,17 @@ async function loadDominance() {
     data: { labels: rows.map((r) => r.date),
       datasets: [{ data: rows.map((r) => r.pct), borderColor: "#f5a623",
         backgroundColor: "rgba(245,166,35,.10)", fill: true, pointRadius: 2, borderWidth: 2, tension: .2 }] },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: (c) => " " + c.parsed.y.toFixed(2) + "%" } } },
-      scales: { y: { ticks: { callback: (v) => v + "%" } }, x: { ticks: { maxTicksLimit: 8 } } },
-    },
+    options: lineOpts({
+      hover: null, legend: { display: false },
+      tooltip: (c) => " " + c.parsed.y.toFixed(2) + "%",
+      maxX: 8, y: { ticks: { callback: (v) => v + "%" } },
+    }),
   });
 }
 
 /* ---------------------------------------------------------------- price alerts */
 async function loadAlerts() {
-  const rows = await (await fetch("/api/alerts")).json();
+  const rows = await getJSON("/api/alerts");
   $("#al-table tbody").innerHTML = rows.map((a) => `
     <tr style="${a.active ? "" : "opacity:.5"}">
       <td>${esc(a.symbol.toUpperCase())}</td>
@@ -1249,7 +1182,7 @@ $("#al-form").addEventListener("submit", async (e) => {
 
 /* ---------------------------------------------------------------- coinbase sync */
 async function loadCbStatus() {
-  const s = await (await fetch("/api/coinbase/status")).json();
+  const s = await getJSON("/api/coinbase/status");
   const el = $("#cb-status");
   const table = $("#cb-balances");
   if (!s.connected) {
@@ -1292,7 +1225,7 @@ const _bufToB64u = (b) => btoa(String.fromCharCode(...new Uint8Array(b)))
   .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 async function loadPasskeys() {
-  const rows = await (await fetch("/api/passkey/list")).json();
+  const rows = await getJSON("/api/passkey/list");
   $("#pk-table tbody").innerHTML = rows.length ? rows.map((p) => `
     <tr>
       <td>${esc(p.device_name)}</td>
@@ -1352,7 +1285,7 @@ $("#pk-add").addEventListener("click", async () => {
 
 /* ---------------------------------------------------------------- backups & tax report */
 async function loadBackupInfo() {
-  const b = await (await fetch("/api/backup")).json();
+  const b = await getJSON("/api/backup");
   const where = b.icloud ? "iCloud Drive (Crypto Tracker Backups)" : b.dir;
   $("#backup-info").textContent = b.count
     ? `${b.count} backup${b.count > 1 ? "s" : ""} in ${where} — latest: ${b.last}. A new one is made daily while the app runs.`
@@ -1377,7 +1310,7 @@ $("#tax-8949-dl").addEventListener("click", () => {
 
 /* ---------------------------------------------------------------- to-do list */
 async function loadTodos() {
-  const rows = await (await fetch("/api/todos")).json();
+  const rows = await getJSON("/api/todos");
   $("#todo-table tbody").innerHTML = rows.map((t) => `
     <tr style="${t.done ? "opacity:.45" : ""}">
       <td><input type="checkbox" ${t.done ? "checked" : ""} onchange="toggleTodo(${t.id})"></td>

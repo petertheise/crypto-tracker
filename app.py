@@ -14,7 +14,7 @@ import bisect
 import secrets
 import threading
 import subprocess
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from urllib.parse import urlsplit
 
 import requests
@@ -396,6 +396,31 @@ def api_pk_delete(pk_id):
 
 # ---------------------------------------------------------------- API helpers
 
+def cached_fetch(key, ttl, fetch_fn, stale="serve"):
+    """Return the cached JSON for key if it is fresher than ttl, else call
+    fetch_fn(), store the result and return it. stale= picks what happens when
+    the fetch fails and we do have an older row: 'serve' hands the old data
+    back as-is, 'touch' hands it back and re-stamps it so the next attempt
+    waits a full ttl, 'raise' lets the error through. With no cached row at all
+    the error always propagates."""
+    db = get_db()
+    row = db.execute("SELECT data, updated_at FROM api_cache WHERE key=?", (key,)).fetchone()
+    if row and time.time() - row["updated_at"] < ttl:
+        return json.loads(row["data"])
+    try:
+        data = fetch_fn()
+    except Exception:
+        if row is None or stale == "raise":
+            raise
+        data = json.loads(row["data"])
+        if stale == "serve":
+            return data
+    db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
+               (key, json.dumps(data), time.time()))
+    db.commit()
+    return data
+
+
 def cg_get(path, params=None, cache_key=None, ttl=60):
     """GET from CoinGecko with a small SQLite cache to respect rate limits."""
     db = get_db()
@@ -454,7 +479,7 @@ def get_history(cg_id, days=365):
                 ttl=3600,
             )
             rows = [
-                (cg_id, datetime.utcfromtimestamp(ts / 1000).date().isoformat(), price)
+                (cg_id, datetime.fromtimestamp(ts / 1000, tz=timezone.utc).date().isoformat(), price)
                 for ts, price in data.get("prices", [])
             ]
             db.executemany(
@@ -879,12 +904,11 @@ def api_monthly():
     return jsonify([dict(r) for r in rows])
 
 
-@app.route("/api/history/allocation")
-def api_allocation_history():
-    """Per-coin portfolio value over time (weekly samples) for the stacked
-    allocation chart. Top coins by current value; the rest grouped as Other."""
-    days = int(request.args.get("days", 365))
-    db = get_db()
+def load_holdings_axis(db, days):
+    """Shared setup for the value-over-time charts: per-coin daily price
+    lookups for coins we hold, the union date axis, and transactions grouped by
+    coin. A coin may be missing recent dates if the price API was rate-limited,
+    so the walk below carries its last known price forward."""
     coins = db.execute(
         """SELECT c.symbol, c.coingecko_id FROM coins c
            WHERE EXISTS (SELECT 1 FROM transactions t WHERE t.symbol=c.symbol)"""
@@ -901,8 +925,15 @@ def api_allocation_history():
     txs_by_sym = {}
     for t in all_tx:
         txs_by_sym.setdefault(t["symbol"], []).append(t)
+    return all_tx, price_maps, all_dates, txs_by_sym
+
+
+def walk_holdings(price_maps, all_dates, txs_by_sym):
+    """Walk the date axis once, advancing each coin's transaction pointer and
+    carrying its last known price forward. Yields (date, coin_state) where
+    coin_state[sym] is that day's live {"i","qty","px"} dict. Callers decide
+    what to accumulate - keep their per-coin order as price_maps' order."""
     coin_state = {s: {"i": 0, "qty": 0.0, "px": None} for s in price_maps}
-    per_coin = {s: [] for s in price_maps}   # aligned with all_dates
     for d in all_dates:
         for sym, pm in price_maps.items():
             st = coin_state[sym]
@@ -913,6 +944,20 @@ def api_allocation_history():
                 st["i"] += 1
             if d in pm:
                 st["px"] = pm[d]
+        yield d, coin_state
+
+
+@app.route("/api/history/allocation")
+def api_allocation_history():
+    """Per-coin portfolio value over time (weekly samples) for the stacked
+    allocation chart. Top coins by current value; the rest grouped as Other."""
+    days = int(request.args.get("days", 365))
+    db = get_db()
+    _all_tx, price_maps, all_dates, txs_by_sym = load_holdings_axis(db, days)
+    per_coin = {s: [] for s in price_maps}   # aligned with all_dates
+    for d, coin_state in walk_holdings(price_maps, all_dates, txs_by_sym):
+        for sym in price_maps:
+            st = coin_state[sym]
             per_coin[sym].append(st["qty"] * st["px"] if st["px"] is not None else 0.0)
     # weekly samples (plus the most recent day) keep the chart light
     idx = list(range(0, len(all_dates), 7))
@@ -982,7 +1027,7 @@ def ensure_yahoo_backfill(db, cg_id, yahoo_symbol):
         result = resp.json()["chart"]["result"][0]
         closes = result["indicators"]["quote"][0]["close"]
         rows = [
-            (cg_id, datetime.utcfromtimestamp(ts).date().isoformat(), px)
+            (cg_id, datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat(), px)
             for ts, px in zip(result["timestamp"], closes) if px
         ]
         # IGNORE: keep the CoinGecko values we already have for recent days
@@ -1194,25 +1239,7 @@ def api_portfolio_history():
     days = int(request.args.get("days", 365))
     db = get_db()
     start = (date.today() - timedelta(days=days)).isoformat()
-    coins = db.execute(
-        """SELECT c.symbol, c.coingecko_id FROM coins c
-           WHERE EXISTS (SELECT 1 FROM transactions t WHERE t.symbol=c.symbol)"""
-    ).fetchall()
-    all_tx = db.execute(
-        "SELECT date, symbol, side, quantity, total FROM transactions ORDER BY date"
-    ).fetchall()
-    # per-coin daily price lookups; a coin may be missing recent dates if the
-    # price API was rate-limited, so carry its last known price forward
-    price_maps = {}
-    for c in coins:
-        hist = get_history(c["coingecko_id"], days)
-        if hist:
-            price_maps[c["symbol"]] = {r["date"]: r["price"] for r in hist}
-    all_dates = sorted({d for pm in price_maps.values() for d in pm})
-    txs_by_sym = {}
-    for t in all_tx:
-        txs_by_sym.setdefault(t["symbol"], []).append(t)
-    coin_state = {s: {"i": 0, "qty": 0.0, "px": None} for s in price_maps}
+    all_tx, price_maps, all_dates, txs_by_sym = load_holdings_axis(db, days)
     # benchmarks: the same cash flows, but every dollar into one asset instead
     ensure_yahoo_backfill(db, "bitcoin", "BTC-USD")
     ensure_yahoo_backfill(db, "ethereum", "ETH-USD")
@@ -1242,17 +1269,10 @@ def api_portfolio_history():
     out = []
     running_cost = 0.0
     cost_i = 0
-    for d in all_dates:
+    for d, coin_state in walk_holdings(price_maps, all_dates, txs_by_sym):
         total = 0.0
-        for sym, pm in price_maps.items():
+        for sym in price_maps:
             st = coin_state[sym]
-            txs = txs_by_sym.get(sym, [])
-            while st["i"] < len(txs) and txs[st["i"]]["date"] <= d:
-                t = txs[st["i"]]
-                st["qty"] += t["quantity"] if t["side"] == "buy" else -t["quantity"]
-                st["i"] += 1
-            if d in pm:
-                st["px"] = pm[d]
             if st["px"] is not None:
                 total += st["qty"] * st["px"]
         while cost_i < len(all_tx) and all_tx[cost_i]["date"] <= d:
@@ -1276,27 +1296,20 @@ def api_portfolio_history():
 def api_stablecoins():
     """Total stablecoin market cap history from DeFiLlama (free), cached daily.
     Rising supply = money parked on the sidelines - a liquidity signal."""
-    db = get_db()
-    key = "stablecoins"
-    row = db.execute("SELECT data, updated_at FROM api_cache WHERE key=?", (key,)).fetchone()
-    if row and time.time() - row["updated_at"] < 86400:
-        return jsonify(json.loads(row["data"]))
-    try:
+    def fetch():
         resp = requests.get("https://stablecoins.llama.fi/stablecoincharts/all", timeout=30)
         resp.raise_for_status()
         out = []
         for p in resp.json():
             mcap = (p.get("totalCirculatingUSD") or {}).get("peggedUSD")
             if mcap:
-                out.append({"date": datetime.utcfromtimestamp(int(p["date"])).date().isoformat(),
+                out.append({"date": datetime.fromtimestamp(int(p["date"]), tz=timezone.utc).date().isoformat(),
                             "mcap": round(mcap)})
-        db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
-                   (key, json.dumps(out), time.time()))
-        db.commit()
-        return jsonify(out)
+        return out
+
+    try:
+        return jsonify(cached_fetch("stablecoins", 86400, fetch))
     except Exception:
-        if row:
-            return jsonify(json.loads(row["data"]))
         return jsonify([])
 
 
@@ -1342,20 +1355,14 @@ def api_market():
     except Exception:
         out["trending"] = []
     # Fear & Greed from alternative.me (same source as the spreadsheet)
-    db = get_db()
+    def fetch_fng():
+        # limit=0 -> full history (back to 2018), so the UI can offer long ranges
+        resp = requests.get("https://api.alternative.me/fng/?limit=0", timeout=20)
+        resp.raise_for_status()
+        return resp.json()
+
     try:
-        key = "fng:all"
-        row = db.execute("SELECT data, updated_at FROM api_cache WHERE key=?", (key,)).fetchone()
-        if row and time.time() - row["updated_at"] < 3600:
-            fng = json.loads(row["data"])
-        else:
-            # limit=0 -> full history (back to 2018), so the UI can offer long ranges
-            resp = requests.get("https://api.alternative.me/fng/?limit=0", timeout=20)
-            resp.raise_for_status()
-            fng = resp.json()
-            db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
-                       (key, json.dumps(fng), time.time()))
-            db.commit()
+        fng = cached_fetch("fng:all", 3600, fetch_fng, stale="raise")
         pts = fng.get("data", [])
         out["fear_greed"] = {
             "value": int(pts[0]["value"]),
@@ -1370,27 +1377,15 @@ def api_market():
         out["fear_greed"] = None
     # BTC network fees (mempool.space) - useful when planning cold-wallet moves
     try:
-        row = db.execute("SELECT data, updated_at FROM api_cache WHERE key='btcfees'").fetchone()
-        if row and time.time() - row["updated_at"] < 600:
-            out["btc_fees"] = json.loads(row["data"])
-        else:
-            fees = requests.get("https://mempool.space/api/v1/fees/recommended", timeout=15).json()
-            db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
-                       ("btcfees", json.dumps(fees), time.time()))
-            db.commit()
-            out["btc_fees"] = fees
+        out["btc_fees"] = cached_fetch("btcfees", 600, lambda: requests.get(
+            "https://mempool.space/api/v1/fees/recommended", timeout=15).json(), stale="raise")
     except Exception:
         out["btc_fees"] = None
     # halving countdown from current block height (every 210,000 blocks)
     try:
-        row = db.execute("SELECT data, updated_at FROM api_cache WHERE key='btctip'").fetchone()
-        if row and time.time() - row["updated_at"] < 3600:
-            height = int(json.loads(row["data"]))
-        else:
-            height = int(requests.get("https://mempool.space/api/blocks/tip/height", timeout=15).text)
-            db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
-                       ("btctip", json.dumps(height), time.time()))
-            db.commit()
+        # cached as a bare int, so round-trip it back through int()
+        height = int(cached_fetch("btctip", 3600, lambda: int(requests.get(
+            "https://mempool.space/api/blocks/tip/height", timeout=15).text), stale="raise"))
         remaining = (height // 210000 + 1) * 210000 - height
         est = datetime.now() + timedelta(minutes=10 * remaining)
         out["halving"] = {"height": height, "blocks_remaining": remaining,
@@ -1442,13 +1437,8 @@ def yahoo_snapshot(sym):
     so the UI can show daily and weekly moves. Cached 15 minutes."""
     if sym == "CASH":
         return {"price": 1.0, "prev": 1.0, "week": 1.0}
-    db = get_db()
-    key = "ys:" + sym
-    row = db.execute("SELECT data, updated_at FROM api_cache WHERE key=?", (key,)).fetchone()
-    if row and time.time() - row["updated_at"] < 900:
-        return json.loads(row["data"])
-    snap = None
-    try:
+
+    def fetch():
         resp = requests.get("https://query1.finance.yahoo.com/v8/finance/chart/" + sym,
                             params={"range": "1mo", "interval": "1d"},
                             headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -1463,23 +1453,16 @@ def yahoo_snapshot(sym):
         # last close at or before 7 days ago
         cutoff = time.time() - 7 * 86400
         week = next((c for t, c in reversed(pairs) if t <= cutoff), pairs[0][1] if pairs else None)
-        if price:
-            snap = {"price": price, "prev": prev or price, "week": week or price}
+        if not price:
+            raise ValueError("no price in Yahoo response")  # -> fall back to cache
+        return {"price": price, "prev": prev or price, "week": week or price}
+
+    # 'touch': a failed fetch re-stamps the old snapshot, so we don't hammer
+    # Yahoo on every request while it is down
+    try:
+        return cached_fetch("ys:" + sym, 900, fetch, stale="touch")
     except Exception:
-        snap = None
-    if snap is None:
-        snap = json.loads(row["data"]) if row else None
-    if snap is not None:
-        db.execute("INSERT OR REPLACE INTO api_cache (key,data,updated_at) VALUES (?,?,?)",
-                   (key, json.dumps(snap), time.time()))
-        db.commit()
-    return snap
-
-
-def yahoo_quote(sym):
-    """Latest price only (kept for callers that don't need the deltas)."""
-    snap = yahoo_snapshot(sym)
-    return snap["price"] if snap else None
+        return None
 
 
 def split_by_account(db, positions):
@@ -1791,7 +1774,7 @@ def coinbase_sync(conn):
     if row:
         since = row[0]
     else:
-        since = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         conn.execute("INSERT INTO settings (key, value) VALUES ('cb_sync_since', ?)", (since,))
     known = {r[0] for r in conn.execute("SELECT symbol FROM coins")}
     seen = {r[0] for r in conn.execute("SELECT cb_id FROM cb_synced")}
