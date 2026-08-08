@@ -776,6 +776,7 @@ async function loadCoinChart(panel = 1) {
   makeChart(cfg.canvas, {
     data: { labels, datasets },
     options: {
+      maintainAspectRatio: false,  // fill the chart-box, don't overflow it
       interaction: { mode: "nearest", intersect: false },
       plugins: { legend: { display: true },
         tooltip: { callbacks: { label: (c) => {
