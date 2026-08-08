@@ -54,7 +54,7 @@ $$(".tab").forEach((btn) => btn.addEventListener("click", () => {
   btn.classList.add("active");
   $("#tab-" + btn.dataset.tab).classList.add("active");
   if (btn.dataset.tab === "market" && !state.marketLoaded) loadMarket();
-  if (btn.dataset.tab === "charts" && !state.coinChartLoaded) loadCoinChart();
+  if (btn.dataset.tab === "charts" && !state.coinChartLoaded) { loadCoinChart(1); loadCoinChart(2); }
   if (btn.dataset.tab === "stocks" && !state.stocksLoaded) { loadStocks(); loadStocksHistory(); loadStocksEach(); }
 }));
 
@@ -164,6 +164,7 @@ async function loadPortfolio() {
     .catch(() => {});
 
   renderHoldings();
+  populateChartSelects();
   renderYearly(p.yearly);
   renderAllocation(active);
   renderPLChart(p.holdings);
@@ -512,8 +513,7 @@ async function loadCoins() {
   $("#tf-symbol").innerHTML = opts;
   $("#al-symbol").innerHTML = opts;
   $("#tx-filter").innerHTML = `<option value="">All coins</option>` + opts;
-  $("#chart-coin").innerHTML = state.coins
-    .map((c) => `<option value="${esc(c.coingecko_id)}">${esc(c.name)} (${esc(c.symbol.toUpperCase())})</option>`).join("");
+  populateChartSelects();
   $("#coins-table tbody").innerHTML = state.coins.map((c) => `
     <tr><td>${esc(c.symbol.toUpperCase())}</td><td>${esc(c.name)}</td><td>${esc(c.coingecko_id)}</td>
     <td><span class="badge">${esc(c.category)}</span></td></tr>`).join("");
@@ -713,19 +713,49 @@ $("#cv-form").addEventListener("submit", async (e) => {
 });
 
 /* ---------------------------------------------------------------- coin chart */
-async function loadCoinChart() {
+// two price panels: 1 = active holdings, 2 = retired coins
+const COIN_PANELS = {
+  1: { select: "#chart-coin",  canvas: "#coin-chart",  stats: "#coin-chart-stats",  stateKey: "coinDays"  },
+  2: { select: "#chart-coin2", canvas: "#coin-chart2", stats: "#coin-chart-stats2", stateKey: "coinDays2" },
+};
+
+// active coins -> chart 1, retired (closed) coins -> chart 2. keeps selection on refresh.
+function populateChartSelects() {
+  if (!state.coins) return;
+  const holdings = state.portfolio?.holdings || [];
+  const closedIds = new Set(holdings.filter((h) => h.closed).map((h) => h.coingecko_id));
+  const openIds = new Set(holdings.filter((h) => !h.closed).map((h) => h.coingecko_id));
+  const opt = (c) => `<option value="${esc(c.coingecko_id)}">${esc(c.name)} (${esc(c.symbol.toUpperCase())})</option>`;
+  // until portfolio data arrives, everything goes in chart 1
+  let active = state.coins.filter((c) => openIds.has(c.coingecko_id) || (!openIds.size && !closedIds.size));
+  const retired = state.coins.filter((c) => closedIds.has(c.coingecko_id));
+  // actives ordered by position value (largest first) so the default chart is a real holding
+  const valueOf = (c) => holdings.find((h) => h.coingecko_id === c.coingecko_id)?.value ?? 0;
+  active = active.sort((a, b) => valueOf(b) - valueOf(a));
+  const keep = (sel, list) => {
+    const el = $(sel);
+    const prev = el.value;
+    el.innerHTML = list.map(opt).join("");
+    if (prev && [...el.options].some((o) => o.value === prev)) el.value = prev;
+  };
+  keep("#chart-coin", active);
+  keep("#chart-coin2", retired);
+}
+
+async function loadCoinChart(panel = 1) {
+  const cfg = COIN_PANELS[panel];
   state.coinChartLoaded = true;
-  const id = $("#chart-coin").value;
-  if (!id) return;
+  const id = $(cfg.select).value;
+  if (!id) { $(cfg.stats).innerHTML = "<span>No coins in this group.</span>"; return; }
   const coin = state.coins.find((c) => c.coingecko_id === id);
   const [data, txs] = await Promise.all([
-    fetch(`/api/history/coin/${id}?days=${state.coinDays}`).then((r) => r.json()),
+    fetch(`/api/history/coin/${id}?days=${state[cfg.stateKey] || 365}`).then((r) => r.json()),
     coin ? fetch(`/api/transactions?symbol=${coin.symbol}`).then((r) => r.json()) : [],
   ]);
   const labels = data.map((d) => d.date);
   const inRange = new Set(labels);
   const markers = (side) => txs
-    .filter((t) => t.side === side && inRange.has(t.date))
+    .filter((t) => t.side === side && inRange.has(t.date) && t.price > 0) // skip $0-basis adjustments
     .map((t) => ({ x: t.date, y: t.price, r: Math.min(4 + Math.sqrt(t.total) / 2, 12), tx: t }));
   const buys = markers("buy"), sells = markers("sell");
   const datasets = [
@@ -743,7 +773,7 @@ async function loadCoinChart() {
     datasets.push({ label: "My avg cost", type: "line", data: labels.map(() => h.cost_avg),
       borderColor: "#f5a623", borderDash: [6, 5], pointRadius: 0, borderWidth: 1.5, order: 2 });
   }
-  makeChart("#coin-chart", {
+  makeChart(cfg.canvas, {
     data: { labels, datasets },
     options: {
       interaction: { mode: "nearest", intersect: false },
@@ -760,17 +790,19 @@ async function loadCoinChart() {
     const prices = data.map((d) => d.price);
     const first = prices[0], last = prices[prices.length - 1];
     const chg = ((last - first) / first) * 100;
-    $("#coin-chart-stats").innerHTML = `
+    $(cfg.stats).innerHTML = `
       <span>Current: <b>${fmtUSD(last)}</b></span>
       <span>Period change: <b class="${pctClass(chg)}">${fmtPct(chg)}</b></span>
       <span>High: <b>${fmtUSD(Math.max(...prices))}</b></span>
       <span>Low: <b>${fmtUSD(Math.min(...prices))}</b></span>`;
   } else {
-    $("#coin-chart-stats").innerHTML = "<span>No history available yet — try again in a minute (API rate limit).</span>";
+    $(cfg.stats).innerHTML = "<span>No history available yet — try again in a minute (API rate limit).</span>";
   }
 }
-$("#chart-coin").addEventListener("change", loadCoinChart);
-wireRange("#coin-range", "coinDays", loadCoinChart);
+$("#chart-coin").addEventListener("change", () => loadCoinChart(1));
+$("#chart-coin2").addEventListener("change", () => loadCoinChart(2));
+wireRange("#coin-range", "coinDays", () => loadCoinChart(1));
+wireRange("#coin-range2", "coinDays2", () => loadCoinChart(2));
 
 /* ---------------------------------------------------------------- stocks */
 function rangeDays(d) {

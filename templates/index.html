@@ -227,21 +227,39 @@
 
   <!-- ======================= CHARTS ======================= -->
   <section id="tab-charts" class="tabpane">
-    <div class="panel">
-      <div class="panel-head">
-        <h2>Price History</h2>
-        <select id="chart-coin"></select>
-        <div class="range-btns" id="coin-range">
-          <button data-days="7">7D</button>
-          <button data-days="30">1M</button>
-          <button data-days="90">3M</button>
-          <button data-days="ytd">YTD</button>
-          <button class="active" data-days="365">1Y</button>
-          <button data-days="730">2Y</button>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Active Holdings</h2>
+          <select id="chart-coin"></select>
+          <div class="range-btns" id="coin-range">
+            <button data-days="7">7D</button>
+            <button data-days="30">1M</button>
+            <button data-days="90">3M</button>
+            <button data-days="ytd">YTD</button>
+            <button class="active" data-days="365">1Y</button>
+            <button data-days="730">2Y</button>
+          </div>
         </div>
+        <div class="chart-box"><canvas id="coin-chart"></canvas></div>
+        <div id="coin-chart-stats" class="chart-stats"></div>
       </div>
-      <canvas id="coin-chart" height="110"></canvas>
-      <div id="coin-chart-stats" class="chart-stats"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Retired Coins <span class="hint-inline">positions you've exited</span></h2>
+          <select id="chart-coin2"></select>
+          <div class="range-btns" id="coin-range2">
+            <button data-days="7">7D</button>
+            <button data-days="30">1M</button>
+            <button data-days="90">3M</button>
+            <button data-days="ytd">YTD</button>
+            <button class="active" data-days="365">1Y</button>
+            <button data-days="730">2Y</button>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="coin-chart2"></canvas></div>
+        <div id="coin-chart-stats2" class="chart-stats"></div>
+      </div>
     </div>
   </section>
 
