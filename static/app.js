@@ -833,7 +833,11 @@ async function loadStocks() {
       <div class="sub ${gc}">${fmtPct(gainPct)}</div></div>
     <div class="card"><div class="label">Est. Annual Income</div>
       <div class="value">${fmtUSD(s.total_income, 0)}</div>
-      <div class="sub">dividends & interest</div></div>`;
+      <div class="sub">dividends & interest</div></div>` +
+    (s.fees ? `
+    <div class="card"><div class="label">Advisory Fees (YTD)</div>
+      <div class="value neg">${fmtUSD(s.fees.ytd, 2)}</div>
+      <div class="sub">${s.fees.quarter_label || "Q"}: ${fmtUSD(s.fees.quarter, 0)} · ~${fmtUSD(s.fees.expected_annual, 0)}/yr at ${s.fees.rate}%</div></div>` : "");
   $("#stk-asof").textContent = s.as_of ? `positions as of ${s.as_of} import` : "";
   // by-portfolio table + donut
   $("#stk-accts tbody").innerHTML = s.accounts.map((a) => `
@@ -952,14 +956,21 @@ wireRange("#stke-range", "stkeDays", loadStocksEach);
 wireRange("#stk-range", "stkDays", loadStocksHistory);
 $("#stk-upload").addEventListener("click", async () => {
   const msg = $("#stk-msg");
-  const f = $("#stk-file").files[0];
-  if (!f) { msg.textContent = "Choose the CSV file first."; msg.className = "neg"; return; }
+  const files = $("#stk-file").files;
+  if (!files.length) { msg.textContent = "Choose the statement PDFs first."; msg.className = "neg"; return; }
+  msg.textContent = `Parsing ${files.length} statement${files.length > 1 ? "s" : ""}…`;
+  msg.className = "";
   const fd = new FormData();
-  fd.append("file", f);
-  const res = await (await fetch("/api/stocks/import", { method: "POST", body: fd })).json();
+  [...files].forEach((f) => fd.append("files", f));
+  const res = await (await fetch("/api/stocks/import_statements", { method: "POST", body: fd })).json();
   if (res.error) { msg.textContent = res.error; msg.className = "neg"; return; }
-  msg.textContent = `Imported ${res.count} positions ✓`;
-  msg.className = "pos";
+  const ok = res.applied.length;
+  const bad = res.results.filter((r) => !r.ok);
+  msg.textContent = `${ok} account${ok === 1 ? "" : "s"} updated ✓` + (bad.length ? ` — ${bad.length} skipped` : "");
+  msg.className = bad.length ? "neg" : "pos";
+  $("#stk-import-results").innerHTML = res.results.map((r) => r.ok
+    ? `<li class="pos">✓ ${esc(r.account)} — reconciled to ${fmtUSD(r.closing, 2)}</li>`
+    : `<li class="neg">✗ ${esc(r.account || r.file)} — ${esc(r.error)}</li>`).join("");
   $("#stk-file").value = "";
   loadStocks(); loadStocksHistory(); loadStocksEach();
 });

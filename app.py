@@ -6,6 +6,7 @@ APIs: CoinGecko (prices, free tier) and alternative.me (Fear & Greed).
 """
 import os
 import io
+import re
 import csv
 import sqlite3
 import time
@@ -1398,40 +1399,6 @@ def api_market():
 
 # ---------------------------------------------------------------- stocks (Raymond James)
 
-def parse_rjf_csv(text):
-    """Parse a Raymond James portfolio export: positions with cost basis."""
-    rows = list(csv.reader(io.StringIO(text)))
-
-    def num(s):
-        s = (s or "").replace("$", "").replace(",", "").replace("^", "").replace("*", "").strip()
-        neg = s.startswith("(") and s.endswith(")")
-        s = s.strip("()")
-        try:
-            v = float(s)
-        except ValueError:
-            return None
-        return -v if neg else v
-
-    out = []
-    for r in rows[1:]:
-        if len(r) < 11:
-            continue
-        desc, sym, ptype = r[0].strip(), r[1].strip(), r[9].strip()
-        qty, px, invested = num(r[2]), num(r[3]), num(r[10])
-        income = num(r[11]) if len(r) > 11 else 0
-        if not desc or qty is None:
-            continue
-        if not sym:
-            if "cash" in ptype.lower() or "deposit" in desc.lower():
-                sym, px = "CASH", 1.0
-            else:
-                continue
-        out.append({"symbol": sym.upper(), "name": desc.title()[:60], "type": ptype,
-                    "qty": qty, "invested": invested or 0, "income": income or 0,
-                    "rj_price": px or 0})
-    return out
-
-
 def yahoo_snapshot(sym):
     """Current price plus the previous close and the close ~7 days ago,
     so the UI can show daily and weekly moves. Cached 15 minutes."""
@@ -1465,24 +1432,146 @@ def yahoo_snapshot(sym):
         return None
 
 
-def split_by_account(db, positions):
-    """Apportion combined-CSV positions across RJ portfolios using the
-    statement-derived quantity map (settings: stock_account_map)."""
-    row = db.execute("SELECT value FROM settings WHERE key='stock_account_map'").fetchone()
-    mapping = json.loads(row[0] if not hasattr(row, "keys") else row["value"]) if row else {}
-    out = []
-    for p in positions:
-        m = mapping.get(p["symbol"])
-        if not m:
-            out.append(dict(p, account="Unassigned"))
+
+RJ_ACCT_NAMES = {"[REDACTED-RJ-ACCOUNT]": "Joint", "[REDACTED-RJ-ACCOUNT]": "Jennifer IRA", "[REDACTED-RJ-ACCOUNT]": "Peter IRA",
+                 "[REDACTED-RJ-ACCOUNT]": "Peter Roth", "[REDACTED-RJ-ACCOUNT]": "Jennifer Roth", "[REDACTED-RJ-ACCOUNT]": "Aaron (Custodial)"}
+RJ_SYM_BLACKLIST = {"RJA", "SIPC", "IRA", "ETF", "FDIC", "LOSS", "USA", "NYSE"}
+
+
+def parse_rj_statement(pdf_bytes):
+    """Parse one Raymond James monthly statement PDF: account, closing value,
+    cash sweep, positions (qty/cost basis/price/value/income) and advisory fees.
+    Self-validating: every position needs qty*price ~= value, and the account
+    only counts as valid if cash + positions reconcile to the printed closing value."""
+    from pypdf import PdfReader
+    full = "\n".join((pg.extract_text() or "") for pg in PdfReader(io.BytesIO(pdf_bytes)).pages)
+    acct_m = re.search(r"AccountNo\.\s*([0-9A-Z]{8})", full)
+    if not acct_m:
+        raise ValueError("no Raymond James account number found - is this an RJ statement?")
+    acct = acct_m.group(1)
+    closing = float(re.search(r"Closing\s*Value\s*\$([\d,\.]+)", full).group(1).replace(",", ""))
+    cash_m = re.search(r"BankDepositProgram\s*Total\s*\$([\d,\.]+)", full)
+    cash = float(cash_m.group(1).replace(",", "")) if cash_m else 0.0
+
+    positions = {}
+    for m in re.finditer(r"\((([A-Z]{2,6})|30338H656)\)", full):
+        sym = "FCMXPX" if m.group(1) == "30338H656" else m.group(1)
+        if sym in RJ_SYM_BLACKLIST or sym in positions:
             continue
-        total_q = sum(m.values())
-        for acct, q in m.items():
-            frac = q / total_q if total_q else 0
-            if frac > 0:
-                out.append(dict(p, account=acct, qty=p["qty"] * frac,
-                                invested=p["invested"] * frac, income=p["income"] * frac))
-    return out
+        tail = full[m.end():m.end() + 260]
+        qm = re.match(r"\s*([\d,]+\.\d{3})", tail)   # RJ prints quantities with 3 decimals
+        if not qm:
+            continue
+        qty = float(qm.group(1).replace(",", ""))
+        seg = tail[qm.end():].split("LOT")[0]
+        seg = re.sub(r"^c?\s*(\d{2}/\d{2}/\d{4})?", "", seg)  # covered flag + glued acquired-date
+        d = [float(x.replace(",", "")) for x in re.findall(r"\$([\d,]+\.\d{2})", seg)]
+        if len(d) < 2:
+            continue
+        # amounts are glued; search pairs from the END because unit-cost*qty also
+        # equals cost basis - the (price, market value) pair is the last that fits
+        for pi in range(len(d) - 2, -1, -1):
+            price, value = d[pi], d[pi + 1]
+            if price > 0 and value > 0 and abs(qty * price - value) / value < 0.02:
+                cost = d[pi - 1] if pi >= 1 else 0.0
+                income = 0.0
+                vi = seg.find(format(value, ",.2f"))
+                if vi != -1:
+                    ym = re.match(r"(\d{1,2}\.\d{2})%\$([\d,]+\.\d{2})",
+                                  seg[vi + len(format(value, ",.2f")):].lstrip())
+                    if ym:
+                        income = float(ym.group(2).replace(",", ""))
+                # zero-income rows skip the yield column, so a small gain% can
+                # masquerade as yield - reject "income" that equals the gain
+                if income and abs(income - (value - cost)) < 1.0:
+                    income = 0.0
+                positions[sym] = {"qty": qty, "cost": cost, "price": price,
+                                  "value": value, "income": income}
+                break
+
+    computed = cash + sum(p["value"] for p in positions.values())
+    fee_m = re.search(r"Fees?\s*\$\(([\d,]+\.\d{2})\)\$\(([\d,]+\.\d{2})\)", full)
+    rate_m = re.search(r"(\dQ)Fees\s*for\s*\d+/365Days\s*at\s*([\d\.]+)%", full)
+    period_m = re.search(r"([A-Za-z]+\s*\d+\s*to\s*[A-Za-z]+\s*\d+,\s*20\d\d)", full.replace("to", " to ", 1))
+    return {
+        "acct": acct, "name": RJ_ACCT_NAMES.get(acct, acct),
+        "closing": closing, "cash": cash, "positions": positions,
+        "computed": round(computed, 2),
+        "valid": bool(closing) and abs(computed - closing) / closing < 0.005,
+        "fee_q": float(fee_m.group(1).replace(",", "")) if fee_m else 0.0,
+        "fee_ytd": float(fee_m.group(2).replace(",", "")) if fee_m else 0.0,
+        "fee_rate": float(rate_m.group(2)) if rate_m else None,
+        "fee_quarter": rate_m.group(1) if rate_m else None,
+        "period": period_m.group(1) if period_m else None,
+    }
+
+
+@app.route("/api/stocks/import_statements", methods=["POST"])
+def api_stocks_import_statements():
+    """Monthly refresh: upload the six RJ statement PDFs. Each account is
+    validated against its printed closing value; only valid accounts are applied."""
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "No files received."}), 400
+    db = get_db()
+    meta = {r["symbol"]: (r["name"], r["product_type"])
+            for r in db.execute("SELECT DISTINCT symbol, name, product_type FROM stocks")}
+    results = []
+    parsed = {}
+    for f in files:
+        try:
+            st = parse_rj_statement(f.read())
+        except Exception as e:
+            results.append({"file": f.filename, "ok": False, "error": str(e)[:140]})
+            continue
+        if st["acct"] in parsed:
+            results.append({"file": f.filename, "account": st["name"], "ok": False,
+                            "error": "duplicate of another uploaded statement"})
+            continue
+        parsed[st["acct"]] = st
+        results.append({"file": f.filename, "account": st["name"], "ok": st["valid"],
+                        "closing": st["closing"], "computed": st["computed"],
+                        "error": None if st["valid"] else
+                        "positions don't reconcile to the statement's closing value - not applied"})
+    applied = []
+    row = db.execute("SELECT value FROM settings WHERE key='advisory_fees'").fetchone()
+    fees = json.loads(row["value"]) if row else {"accounts": {}}
+    period = None
+    for st in parsed.values():
+        if not st["valid"]:
+            continue
+        name = st["name"]
+        db.execute("DELETE FROM stocks WHERE account=?", (name,))
+        for sym, p in st["positions"].items():
+            nm, pt = meta.get(sym, (sym, "Funds"))
+            db.execute("INSERT OR REPLACE INTO stocks (symbol,account,name,product_type,quantity,invested,income,rj_price) "
+                       "VALUES (?,?,?,?,?,?,?,?)",
+                       (sym, name, nm, pt, p["qty"], p["cost"], p["income"], p["price"]))
+        db.execute("INSERT OR REPLACE INTO stocks (symbol,account,name,product_type,quantity,invested,income,rj_price) "
+                   "VALUES (?,?,?,?,?,?,?,?)",
+                   ("CASH", name, "Raymond James Bank Deposit", "Cash & Cash Alternatives",
+                    st["cash"], st["cash"], 0, 1.0))
+        fees["accounts"][name] = {"q": st["fee_q"], "ytd": st["fee_ytd"]}
+        if st["fee_rate"]:
+            fees["rate"] = st["fee_rate"]
+        if st["fee_quarter"]:
+            fees["quarter"] = st["fee_quarter"]
+        period = st["period"] or period
+        applied.append(name)
+    if applied:
+        mapping = {}
+        for r in db.execute("SELECT symbol, account, quantity FROM stocks"):
+            mapping.setdefault(r["symbol"], {})[r["account"]] = r["quantity"]
+        db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('stock_account_map', ?)",
+                   (json.dumps(mapping),))
+        if period:
+            fees["as_of"] = period
+            db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('stocks_as_of', ?)",
+                       (period + " (statements)",))
+        db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('advisory_fees', ?)",
+                   (json.dumps(fees),))
+    db.commit()
+    return jsonify({"results": results, "applied": applied})
 
 
 @app.route("/api/stocks")
@@ -1537,7 +1626,15 @@ def api_stocks():
         a["week_pct"] = (a["week_change"] / base_w * 100) if base_w else None
     base_d = totals["value"] - totals["day"]
     base_w = totals["value"] - totals["week"]
-    return jsonify({"holdings": out, "accounts": acct_list,
+    fees_row = db.execute("SELECT value FROM settings WHERE key='advisory_fees'").fetchone()
+    fees = None
+    if fees_row:
+        fj = json.loads(fees_row["value"])
+        fq = sum(a.get("q", 0) for a in fj.get("accounts", {}).values())
+        fytd = sum(a.get("ytd", 0) for a in fj.get("accounts", {}).values())
+        fees = {"quarter": fq, "ytd": fytd, "rate": fj.get("rate"),
+                "quarter_label": fj.get("quarter"), "expected_annual": fq * 4}
+    return jsonify({"holdings": out, "accounts": acct_list, "fees": fees,
                     "total_value": totals["value"],
                     "total_invested": totals["invested"],
                     "total_gain": totals["value"] - totals["invested"],
@@ -1547,32 +1644,6 @@ def api_stocks():
                     "week_change": totals["week"],
                     "week_pct": (totals["week"] / base_w * 100) if base_w else None,
                     "as_of": get_setting("stocks_as_of")})
-
-
-@app.route("/api/stocks/import", methods=["POST"])
-def api_stocks_import():
-    f = request.files.get("file")
-    if not f:
-        return jsonify({"error": "No file received."}), 400
-    try:
-        positions = parse_rjf_csv(f.read().decode("utf-8-sig"))
-    except Exception as e:
-        return jsonify({"error": "Could not parse the file: {}".format(str(e)[:120])}), 400
-    if not positions:
-        return jsonify({"error": "No positions found - is this a Raymond James portfolio export?"}), 400
-    db = get_db()
-    split = split_by_account(db, positions)
-    db.execute("DELETE FROM stocks")
-    for p in split:
-        db.execute("INSERT OR REPLACE INTO stocks (symbol,account,name,product_type,quantity,invested,income,rj_price) "
-                   "VALUES (?,?,?,?,?,?,?,?)",
-                   (p["symbol"], p["account"], p["name"], p["type"], p["qty"],
-                    p["invested"], p["income"], p["rj_price"]))
-    db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('stocks_as_of', ?)",
-               (date.today().isoformat(),))
-    db.commit()
-    unassigned = sorted({p["symbol"] for p in split if p["account"] == "Unassigned"})
-    return jsonify({"ok": True, "count": len(positions), "unassigned": unassigned})
 
 
 @app.route("/api/history/stocks")

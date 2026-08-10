@@ -329,14 +329,17 @@
       </div>
     </div>
     <div class="panel">
-      <h2>Update from Raymond James</h2>
-      <p class="hint">Export a fresh portfolio CSV from Raymond James and upload it here.
-      It replaces the current positions — do this after buys, sells, or dividend reinvestments.</p>
+      <h2>Monthly Update — Statement Import</h2>
+      <p class="hint">Each month, download the six account statement PDFs from Raymond James and
+      drop them all here at once. Every account is checked against its statement's printed closing
+      value before anything is applied — a statement that doesn't reconcile is skipped and flagged.
+      This also updates the advisory-fee tracking.</p>
       <div class="form-actions">
-        <input type="file" id="stk-file" accept=".csv">
-        <button type="button" class="primary" id="stk-upload">Import</button>
+        <input type="file" id="stk-file" accept="application/pdf,.pdf" multiple>
+        <button type="button" class="primary" id="stk-upload">Import statements</button>
         <span id="stk-msg"></span>
       </div>
+      <ul id="stk-import-results" class="hint" style="margin-top:8px"></ul>
     </div>
   </section>
 
