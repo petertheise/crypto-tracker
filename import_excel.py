@@ -90,6 +90,6 @@ def main(xlsm_path):
 
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else \
-        "/Users/petertheise/Desktop/Crypto/Crypto Workbooks/Crypto refresh (version 3.4).xlsm"
-    main(path)
+    if len(sys.argv) < 2:
+        sys.exit("usage: python import_excel.py <workbook.xlsm>")
+    main(sys.argv[1])
