@@ -15,11 +15,12 @@
   <h1><img src="/static/logo.png" alt="" class="logo">Crypto Tracker</h1>
   <nav>
     <button class="tab active" data-tab="dashboard">Dashboard</button>
-    <button class="tab" data-tab="transactions">Transactions</button>
-    <button class="tab" data-tab="charts">Charts</button>
-    <button class="tab" data-tab="stocks">Stocks</button>
     <button class="tab" data-tab="market">Market</button>
+    <button class="tab" data-tab="charts">Charts</button>
+    <button class="tab" data-tab="transactions">Transactions</button>
     <button class="tab" data-tab="coins">Coins</button>
+    <button class="tab" data-tab="stocks">Stocks</button>
+    <button class="tab" data-tab="tax">Tax</button>
     <button class="tab" data-tab="todo">To-Do</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -38,14 +39,39 @@
         <label class="toggle"><input type="checkbox" id="show-bench-eth" checked> ETH</label>
         <label class="toggle"><input type="checkbox" id="show-bench-spx" checked> S&amp;P 500</label>
         <label class="toggle"><input type="checkbox" id="show-bench-ndq" checked> Nasdaq</label>
+        <label class="toggle" title="Adds your Raymond James positions and the combined total"><input type="checkbox" id="show-stocks"> + Stocks</label>
+        <span class="hint-inline" id="pf-nw-note"></span>
         <div class="range-btns" id="pf-range">
           <button data-days="7">1W</button>
           <button data-days="30">1M</button>
           <button data-days="90">3M</button>
           <button class="active" data-days="365">1Y</button>
+          <button data-days="730">2Y</button>
+          <button data-days="1095">3Y</button>
+          <button data-days="1825">5Y</button>
         </div>
       </div>
       <div class="chart-box pf-box"><canvas id="pf-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Daily Change <span class="hint-inline" id="daily-summary"></span></h2>
+      <div class="chart-box short"><canvas id="daily-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Holdings
+        <label class="toggle"><input type="checkbox" id="show-closed"> show closed positions</label>
+        <label class="toggle"><input type="checkbox" id="hide-dust"> hide dust (under $5)</label>
+      </h2>
+      <div class="table-scroll">
+      <table id="holdings-table">
+        <thead><tr>
+          <th>Coin</th><th>Category</th><th class="r">Quantity</th><th class="r">Cold</th><th class="r">Avg Cost</th>
+          <th class="r">Price</th><th class="r">24h</th><th class="r">7d</th>
+          <th class="r">Value</th><th class="r">Net Cost</th><th class="r">P/L</th><th class="r">P/L %</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
     </div>
     <div class="panel">
       <h2>Drawdown <span class="hint-inline" id="dd-now"></span></h2>
@@ -72,25 +98,12 @@
           <button data-days="30">1M</button>
           <button data-days="90">3M</button>
           <button class="active" data-days="365">1Y</button>
+          <button data-days="730">2Y</button>
+          <button data-days="1095">3Y</button>
+          <button data-days="1825">5Y</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="alloc-time-chart"></canvas></div>
-    </div>
-    <div class="panel">
-      <h2>Holdings
-        <label class="toggle"><input type="checkbox" id="show-closed"> show closed positions</label>
-        <label class="toggle"><input type="checkbox" id="hide-dust"> hide dust (under $5)</label>
-      </h2>
-      <div class="table-scroll">
-      <table id="holdings-table">
-        <thead><tr>
-          <th>Coin</th><th>Category</th><th class="r">Quantity</th><th class="r">Cold</th><th class="r">Avg Cost</th>
-          <th class="r">Price</th><th class="r">24h</th><th class="r">7d</th>
-          <th class="r">Value</th><th class="r">Net Cost</th><th class="r">P/L</th><th class="r">P/L %</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-      </div>
     </div>
     <div class="panel">
       <h2>Rebalance Preview <span class="hint-inline">set target % per coin — nothing is traded, this only shows the math</span></h2>
@@ -145,8 +158,8 @@
 
   <!-- ======================= TRANSACTIONS ======================= -->
   <section id="tab-transactions" class="tabpane">
-    <details class="panel collapse" id="tx-details">
-      <summary><span id="tx-form-title">Add Transaction</span> <span class="hint-inline">manual entry — Coinbase sync usually handles this now</span></summary>
+    <details class="panel collapse hidden" id="tx-details">
+      <summary><span id="tx-form-title">Edit Transaction</span> <span class="hint-inline">opened by the Edit button on a row — corrections only</span></summary>
       <form id="tx-form" class="tx-form">
         <input type="hidden" id="tx-id">
         <label>Type
@@ -161,25 +174,9 @@
         <label>Exchange <input type="text" id="tx-exchange" value="COINBASE"></label>
         <label class="wide">Notes <input type="text" id="tx-notes"></label>
         <div class="form-actions">
-          <button type="submit" class="primary" id="tx-submit">Add</button>
-          <button type="button" id="tx-cancel" class="hidden">Cancel edit</button>
+          <button type="submit" class="primary" id="tx-submit">Save</button>
+          <button type="button" id="tx-cancel">Close</button>
           <span id="tx-msg"></span>
-        </div>
-      </form>
-    </details>
-    <details class="panel collapse">
-      <summary>Record a Conversion <span class="hint-inline">one coin swapped for another — books a matched sell + buy</span></summary>
-      <form id="cv-form" class="tx-form">
-        <label>Date <input type="date" id="cv-date" required></label>
-        <label>From coin <select id="cv-from" required></select></label>
-        <label>Amount converted <input type="number" id="cv-from-qty" step="any" min="0" required></label>
-        <label>To coin <select id="cv-to" required></select></label>
-        <label>Amount received <input type="number" id="cv-to-qty" step="any" min="0" required></label>
-        <label>USD value ($) <input type="number" id="cv-usd" step="any" min="0" required></label>
-        <label class="wide">Notes <input type="text" id="cv-notes"></label>
-        <div class="form-actions">
-          <button type="submit" class="primary">Record conversion</button>
-          <span id="cv-msg"></span>
         </div>
       </form>
     </details>
@@ -210,6 +207,12 @@
       <div class="panel-head">
         <h2>History</h2>
         <select id="tx-filter"><option value="">All coins</option></select>
+        <select id="tx-type-filter">
+          <option value="">All types</option>
+          <option value="buy">Buys only</option>
+          <option value="sell">Sells only</option>
+          <option value="reward">Staking rewards only</option>
+        </select>
       </div>
       <div class="table-scroll">
       <table id="tx-table">
@@ -221,6 +224,68 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ======================= TAX ======================= -->
+  <section id="tab-tax" class="tabpane">
+    <div class="panel" id="tax-preview-panel">
+      <div class="panel-head">
+        <h2>Tax Preview <span class="hint-inline" id="tax-asof"></span></h2>
+      </div>
+      <p class="hint">What you'd owe tax on if you sold today, split by holding period.
+      Coins held <b>more than one year</b> are long-term (taxed at a lower rate);
+      anything newer is short-term. Nothing here is a taxable event — it's all
+      unrealized until you actually sell. Not tax advice.</p>
+      <div class="cards" id="tax-cards"></div>
+      <div class="table-scroll">
+        <table id="tax-preview-table">
+          <thead><tr>
+            <th>Coin</th>
+            <th class="r">Short-term qty</th><th class="r">Short-term gain</th>
+            <th class="r">Long-term qty</th><th class="r">Long-term gain</th>
+            <th>Next lot goes long-term</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3 style="margin:18px 0 6px">Crossing into long-term soon</h3>
+      <p class="hint" style="margin-top:0">Lots reaching the one-year mark within 90 days.
+      Waiting past the date shown moves that lot to the lower long-term rate.</p>
+      <div class="table-scroll">
+        <table id="tax-soon-table">
+          <thead><tr>
+            <th>Coin</th><th class="r">Quantity</th><th>Bought</th>
+            <th>Goes long-term</th><th class="r">Days</th><th class="r">Unrealized gain</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3 style="margin:18px 0 6px">Sell what-if</h3>
+      <p class="hint" style="margin-top:0">FIFO-walks your oldest lots first — the same
+      order a real sale uses — and shows the gain before you commit to anything.
+      Nothing is recorded.</p>
+      <div class="tx-form">
+        <div class="row">
+          <div><label>Coin</label><select id="wi-symbol"></select></div>
+          <div><label>Quantity</label><input id="wi-qty" type="text" placeholder="0.05"></div>
+          <div style="align-self:end"><button type="button" class="primary" id="wi-run">Preview sale</button></div>
+          <div style="align-self:end"><button type="button" id="wi-all">Sell all</button></div>
+        </div>
+      </div>
+      <div id="wi-result"></div>
+    </div>
+    <div class="panel">
+      <h2>Tax Report</h2>
+      <p class="hint">FIFO realized gains, any year. <b>Summary</b>: one row per sale.
+      <b>Form 8949</b>: one row per lot, with per-lot acquisition dates and the
+      short/long-term split — what a tax preparer actually needs.</p>
+      <div class="form-actions">
+        <select id="tax-year"></select>
+        <button type="button" class="primary" id="tax-dl">Summary CSV</button>
+        <button type="button" class="primary" id="tax-8949-dl">Form 8949 CSV</button>
       </div>
     </div>
   </section>
@@ -238,6 +303,8 @@
             <button data-days="ytd">YTD</button>
             <button class="active" data-days="365">1Y</button>
             <button data-days="730">2Y</button>
+            <button data-days="1095">3Y</button>
+            <button data-days="1825">5Y</button>
           </div>
         </div>
         <div class="chart-box tall"><canvas id="coin-chart"></canvas></div>
@@ -254,6 +321,8 @@
             <button data-days="ytd">YTD</button>
             <button class="active" data-days="365">1Y</button>
             <button data-days="730">2Y</button>
+            <button data-days="1095">3Y</button>
+            <button data-days="1825">5Y</button>
           </div>
         </div>
         <div class="chart-box tall"><canvas id="coin-chart2"></canvas></div>
@@ -276,6 +345,25 @@
       </div>
       <div class="panel"><h2>Portfolio Split</h2><canvas id="stk-acct-donut"></canvas></div>
     </div>
+    <div class="panel" id="fees-panel">
+      <div class="panel-head">
+        <h2>Fees vs Income <span class="hint-inline" id="fees-asof"></span></h2>
+      </div>
+      <p class="hint">What the portfolio pays you versus what it costs you to hold.
+      Income is the dividends and interest Raymond James reports per position;
+      the fee is this quarter's advisory charge annualised.</p>
+      <div class="cards" id="fees-cards"></div>
+      <div class="table-scroll">
+        <table id="fees-table">
+          <thead><tr>
+            <th>Account</th><th class="r">Value</th><th class="r">Est. income/yr</th>
+            <th class="r">Yield</th><th class="r">Fee/yr</th><th class="r">Fee as % of income</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint" id="fees-verdict" style="margin-bottom:0"></p>
+    </div>
     <div class="two-col">
       <div class="panel"><h2>Allocation</h2><canvas id="stk-alloc"></canvas></div>
       <div class="panel">
@@ -288,6 +376,7 @@
             <button class="active" data-days="365">1Y</button>
             <button data-days="730">2Y</button>
             <button data-days="1095">3Y</button>
+            <button data-days="1825">5Y</button>
             <button data-days="3650">10Y</button>
           </div>
         </div>
@@ -306,6 +395,7 @@
           <button class="active" data-days="365">1Y</button>
           <button data-days="730">2Y</button>
           <button data-days="1095">3Y</button>
+          <button data-days="1825">5Y</button>
           <button data-days="3650">10Y</button>
         </div>
       </div>
@@ -368,6 +458,25 @@
           <tbody></tbody>
         </table>
       </div>
+    </div>
+    <div class="panel" id="buyfear-panel">
+      <div class="panel-head">
+        <h2>Did You Buy the Fear? <span class="hint-inline" id="bf-sub"></span></h2>
+      </div>
+      <p class="hint">Every buy scored against the Fear &amp; Greed index on the day you
+      made it, then followed through to what those dollars are worth today.
+      Staking rewards are excluded — they arrive on a schedule, not a decision.</p>
+      <div class="chart-box"><canvas id="bf-chart"></canvas></div>
+      <div class="table-scroll">
+        <table id="bf-table">
+          <thead><tr>
+            <th>Mood when you bought</th><th class="r">Buys</th><th class="r">Invested</th>
+            <th class="r">Share</th><th class="r">Worth today</th><th class="r">Return</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint" id="bf-verdict" style="margin-bottom:0"></p>
     </div>
     <div class="two-col">
       <div class="panel">
@@ -523,17 +632,6 @@
       <div class="form-actions">
         <button type="button" class="primary" id="backup-now">Back up now</button>
         <span id="backup-msg"></span>
-      </div>
-    </div>
-    <div class="panel">
-      <h2>Tax Report</h2>
-      <p class="hint">FIFO realized gains, any year. <b>Summary</b>: one row per sale.
-      <b>Form 8949</b>: one row per lot, with per-lot acquisition dates and the
-      short/long-term split — what a tax preparer actually needs.</p>
-      <div class="form-actions">
-        <select id="tax-year"></select>
-        <button type="button" class="primary" id="tax-dl">Summary CSV</button>
-        <button type="button" class="primary" id="tax-8949-dl">Form 8949 CSV</button>
       </div>
     </div>
     <div class="panel">

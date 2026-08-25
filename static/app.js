@@ -53,7 +53,7 @@ $$(".tab").forEach((btn) => btn.addEventListener("click", () => {
   $$(".tabpane").forEach((p) => p.classList.remove("active"));
   btn.classList.add("active");
   $("#tab-" + btn.dataset.tab).classList.add("active");
-  if (btn.dataset.tab === "market" && !state.marketLoaded) loadMarket();
+  if (btn.dataset.tab === "market" && !state.marketLoaded) { loadMarket(); loadBuyFear(); }
   if (btn.dataset.tab === "charts" && !state.coinChartLoaded) { loadCoinChart(1); loadCoinChart(2); }
   if (btn.dataset.tab === "stocks" && !state.stocksLoaded) { loadStocks(); loadStocksHistory(); loadStocksEach(); }
 }));
@@ -92,6 +92,27 @@ function wireToggle(elementId, storageKey, defaultOn, onChange) {
 
 const getJSON = async (url) => (await fetch(url)).json();
 
+// JSON round-trip for form submits; method can be "PUT" for edits.
+// Omit body for endpoints that take none (backup, coinbase sync, passkey options).
+const postJSON = async (url, body, method = "POST") => (await fetch(url, {
+  method,
+  headers: { "Content-Type": "application/json" },
+  ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+})).json();
+
+// status text next to a form: green success clears itself after ms (0 = keep),
+// red errors stay until the next attempt
+function flash(el, text, ok, ms = 3000) {
+  el.textContent = text;
+  el.className = ok ? "pos" : "neg";
+  if (ok && ms) setTimeout(() => (el.textContent = ""), ms);
+}
+
+// the three views that show ledger data — refresh together after any tx change
+function refreshLedgerViews() {
+  loadTransactions(); loadPortfolio(); loadPortfolioHistory();
+}
+
 /* ---------------------------------------------------------------- chart options */
 // shared option fragments. Each call returns fresh objects so no two charts share one.
 const usdTicks = (d) => ({ ticks: { callback: (v) => fmtUSD(v, d) } });
@@ -119,11 +140,16 @@ async function loadPortfolio() {
   const pl = p.total_pl, plc = pctClass(pl);
   const active = p.holdings.filter((h) => !h.closed);
   const best = active.slice().sort((a, b) => (b.change_24h ?? -999) - (a.change_24h ?? -999))[0];
+  // 24h move in dollars: back out yesterday's value from each holding's 24h %
+  const ch24 = active.reduce((s, h) =>
+    s + (h.change_24h != null && h.value > 0 ? h.value * h.change_24h / (100 + h.change_24h) : 0), 0);
+  const ch24pct = p.total_value - ch24 > 0 ? (ch24 / (p.total_value - ch24)) * 100 : null;
   $("#summary-cards").innerHTML = `
     <div class="card"><div class="label">Portfolio Value</div>
-      <div class="value">${fmtUSD(p.total_value, 2)}</div></div>
-    <div class="card"><div class="label">Net Invested</div>
-      <div class="value">${fmtUSD(p.total_cost, 2)}</div></div>
+      <div class="value ${pctClass(p.total_value - p.total_cost)}">${fmtUSD(p.total_value, 2)}</div></div>
+    <div class="card"><div class="label">24h Change</div>
+      <div class="value ${pctClass(ch24)}">${fmtUSD(ch24, 2)}</div>
+      <div class="sub ${pctClass(ch24)}">${fmtPct(ch24pct)}</div></div>
     <div class="card"><div class="label">Profit / Loss</div>
       <div class="value ${plc}">${fmtUSD(pl, 2)}</div>
       <div class="sub ${plc}">${fmtPct(p.total_pl_pct)}</div>
@@ -131,15 +157,34 @@ async function loadPortfolio() {
     <div class="card"><div class="label">Annualized Return</div>
       <div class="value ${pctClass(p.xirr)}">${p.xirr != null ? fmtPct(p.xirr) : "—"}</div>
       <div class="sub">money-weighted (XIRR)</div></div>
-    <div class="card"><div class="label">Cold Storage</div>
-      <div class="value">${fmtUSD(p.total_cold, 2)}</div>
-      <div class="sub">${p.cold_pct != null ? p.cold_pct.toFixed(1) + "% of portfolio" : ""}</div></div>
     <div class="card"><div class="label">Positions</div>
       <div class="value">${active.length}</div>
       <div class="sub">${p.holdings.length - active.length} closed</div></div>
+    <div class="card"><div class="label">Net Invested</div>
+      <div class="value">${fmtUSD(p.total_cost, 2)}</div></div>
     <div class="card"><div class="label">Best 24h Mover</div>
       <div class="value">${best ? esc(best.symbol) : "—"}</div>
-      <div class="sub ${best ? pctClass(best.change_24h) : ""}">${best ? fmtPct(best.change_24h) : ""}</div></div>`;
+      <div class="sub ${best ? pctClass(best.change_24h) : ""}">${best ? fmtPct(best.change_24h) : ""}</div></div>
+    <div class="card"><div class="label">Fear &amp; Greed</div>
+      <div class="value" id="card-fng">—</div>
+      <div class="sub" id="card-fng-sub"></div></div>
+    <div class="card"><div class="label">Drawdown</div>
+      <div class="value" id="card-dd">—</div>
+      <div class="sub" id="card-dd-sub"></div></div>
+    <div class="card"><div class="label">You vs BTC</div>
+      <div class="value" id="card-btc">—</div>
+      <div class="sub" id="card-btc-sub"></div></div>
+    <div class="card"><div class="label">Cold Storage</div>
+      <div class="value">${p.cold_pct != null ? p.cold_pct.toFixed(1) + "%" : "—"}</div>
+      <div class="sub">${fmtUSD(p.total_cold, 0)} of portfolio</div></div>
+    <div class="card"><div class="label">Next Long-Term</div>
+      <div class="value" id="card-lt">—</div>
+      <div class="sub" id="card-lt-sub"></div></div>`;
+  updateLongTermTile();
+  if (!state.fng) fetch("/api/market").then((r) => r.json())
+    .then((m) => { if (m.fear_greed) { state.fng = m.fear_greed; updateExtraCards(); } })
+    .catch(() => {});
+  updateExtraCards(); // fills from state if the history/market data is already in
   // Net Worth is masked by default on every load; click the eye to reveal for this session.
   const addNetWorth = (s) => {
     const total = p.total_value + s.total_value;
@@ -156,7 +201,10 @@ async function loadPortfolio() {
         : "hidden — tap the eye to show";
     };
     reveal(state.nwShown === true); // stays revealed across refreshes within a session, hidden on a fresh load
-    $("#nw-eye").addEventListener("click", () => reveal(!state.nwShown));
+    $("#nw-eye").addEventListener("click", () => {
+      reveal(!state.nwShown);
+      if ($("#show-stocks")?.checked) renderPfChart();  // overlay follows the mask
+    });
   };
   if (state.stocks) addNetWorth(state.stocks);
   else fetch("/api/stocks").then((r) => r.json())
@@ -306,14 +354,8 @@ $("#rebal-save").addEventListener("click", async () => {
   $$("#rebal-table tbody tr").forEach((r) => {
     targets[r.dataset.sym] = parseFloat(r.querySelector("input").value) || 0;
   });
-  await fetch("/api/targets", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targets }),
-  });
-  const msg = $("#rebal-msg");
-  msg.textContent = "Saved ✓";
-  msg.className = "pos";
-  setTimeout(() => (msg.textContent = ""), 3000);
+  await postJSON("/api/targets", { targets });
+  flash($("#rebal-msg"), "Saved ✓", true);
 });
 
 function renderPLChart(holdings) {
@@ -385,20 +427,20 @@ function renderHoldings() {
   const rows = state.portfolio.holdings.filter((h) =>
     (showClosed || !h.closed) && (!hideDust || Math.abs(h.value) >= 5));
   $("#holdings-table tbody").innerHTML = rows.map((h) => `
-    <tr>
+    <tr data-sym="${esc(h.symbol)}">
       <td><div class="coin-cell">${h.image ? `<img src="${esc(h.image)}">` : ""}
         <div>${esc(h.name)}<div class="sym">${esc(h.symbol)}</div></div></div></td>
       <td><span class="badge">${esc(h.category)}</span></td>
       <td class="r">${fmtNum(h.quantity)}</td>
       <td class="r">${h.cold_pct > 0.05 ? h.cold_pct.toFixed(0) + "%" : "—"}</td>
       <td class="r">${h.cost_avg !== null ? fmtUSD(h.cost_avg) : "—"}</td>
-      <td class="r">${fmtUSD(h.price)}</td>
+      <td class="r" data-cell="price">${fmtUSD(h.price)}</td>
       <td class="r ${pctClass(h.change_24h)}">${fmtPct(h.change_24h)}</td>
       <td class="r ${pctClass(h.change_7d)}">${fmtPct(h.change_7d)}</td>
-      <td class="r">${fmtUSD(h.value, 2)}</td>
+      <td class="r" data-cell="value">${fmtUSD(h.value, 2)}</td>
       <td class="r">${fmtUSD(h.net_cost, 2)}</td>
-      <td class="r ${pctClass(h.pl)}">${fmtUSD(h.pl, 2)}</td>
-      <td class="r ${pctClass(h.pl)}">${fmtPct(h.pl_pct)}</td>
+      <td class="r ${pctClass(h.pl)}" data-cell="pl">${fmtUSD(h.pl, 2)}</td>
+      <td class="r ${pctClass(h.pl)}" data-cell="plpct">${fmtPct(h.pl_pct)}</td>
     </tr>`).join("");
 }
 $("#show-closed").addEventListener("change", renderHoldings);
@@ -437,8 +479,99 @@ function renderAllocation(active) {
 async function loadPortfolioHistory() {
   const r = await fetch("/api/history/portfolio?days=" + state.pfDays);
   state.pfData = await r.json();
+  await loadStocksOverlay();
   renderPfChart();
+  renderDailyChange(state.pfData);
   renderDrawdown(state.pfData);
+  updateExtraCards();
+}
+
+// fills the summary cards whose numbers arrive after the initial render
+// (drawdown + BTC benchmark from the history payload, F&G from the market payload)
+const RANGE_LABEL = { 7: "1W", 30: "1M", 90: "3M", 365: "1Y", 730: "2Y", 1095: "3Y", 1825: "5Y" };
+function updateExtraCards() {
+  const rangeLabel = RANGE_LABEL[state.pfDays] || state.pfDays + "d";
+  if (state.fng && $("#card-fng")) {
+    $("#card-fng").textContent = +state.fng.value;
+    $("#card-fng").style.color = FNG_COLORS(state.fng.value);
+    $("#card-fng-sub").textContent = state.fng.label;
+  }
+  const data = state.pfData || [];
+  const last = data[data.length - 1];
+  if (!last || !$("#card-dd")) return;
+  let peak = 0;
+  data.forEach((d) => { peak = Math.max(peak, d.value); });
+  const dd = peak > 0 ? ((last.value - peak) / peak) * 100 : null;
+  $("#card-dd").textContent = dd != null ? dd.toFixed(1) + "%" : "—";
+  $("#card-dd").className = "value " + (dd < -0.05 ? "neg" : "");
+  $("#card-dd-sub").textContent = "below " + rangeLabel + " peak";
+  if (last.bench != null && last.cost != null) {
+    const mePL = last.value - last.cost, btcPL = last.bench - last.cost, diff = mePL - btcPL;
+    $("#card-btc").textContent = (diff >= 0 ? "+" : "") + fmtUSD(diff, 0);
+    $("#card-btc").className = "value " + pctClass(diff);
+    $("#card-btc-sub").textContent =
+      `you ${fmtUSD(mePL, 0)} · BTC-only ${fmtUSD(btcPL, 0)} (${rangeLabel})`;
+  }
+}
+
+// day-over-day dollar move: green bars up, red bars down. Deposits and withdrawals
+// are backed out via the cost line so a buy doesn't read as a gain.
+function renderDailyChange(data) {
+  const rows = [];
+  for (let i = 1; i < data.length; i++) {
+    const flow = data[i].cost - data[i - 1].cost;        // money added (+) or taken out (-)
+    rows.push({ date: data[i].date, change: data[i].value - data[i - 1].value - flow });
+  }
+  const ups = rows.filter((r) => r.change > 0).length;
+  const best = rows.reduce((a, b) => (b.change > (a?.change ?? -Infinity) ? b : a), null);
+  const worst = rows.reduce((a, b) => (b.change < (a?.change ?? Infinity) ? b : a), null);
+  $("#daily-summary").innerHTML = rows.length
+    ? `${ups} up · ${rows.length - ups} down · best ${fmtUSD(best.change, 0)} (${best.date})`
+      + ` · worst ${fmtUSD(worst.change, 0)} (${worst.date})`
+    : "";
+  makeChart("#daily-chart", {
+    type: "bar",
+    data: {
+      labels: rows.map((r) => r.date),
+      datasets: [{
+        data: rows.map((r) => r.change),
+        backgroundColor: rows.map((r) => r.change >= 0 ? "rgba(46,204,113,.8)" : "rgba(231,76,60,.8)"),
+        borderWidth: 0,
+      }],
+    },
+    options: lineOpts({
+      hover: "nearest", legend: { display: false },
+      tooltip: (c) => " " + (c.parsed.y >= 0 ? "+" : "") + fmtUSD(c.parsed.y, 2),
+      y: usdTicks(0),
+    }),
+  });
+}
+
+// Stock history for the net-worth overlay. Stocks only price on trading days,
+// so each crypto date carries the last known stock value forward. Cached per
+// range so flipping the toggle doesn't refetch.
+async function loadStocksOverlay() {
+  if (!$("#show-stocks")?.checked) return;
+  const days = state.pfDays;
+  if (state.stkOverlay?.days === days) return;
+  try {
+    const d = await getJSON("/api/history/stocks?days=" + days);
+    state.stkOverlay = { days, byDate: Object.fromEntries(d.points.map((p) => [p.date, p.value])) };
+  } catch { state.stkOverlay = null; }
+}
+
+// the net-worth total is masked until the eye on the Net Worth card is opened;
+// the overlay honours that rather than leaking the number onto a chart
+function stocksSeries(dates) {
+  if (!$("#show-stocks")?.checked) return null;
+  if (state.nwShown !== true) return "masked";
+  const by = state.stkOverlay?.byDate;
+  if (!by) return null;
+  let last = null;
+  return dates.map((d) => {
+    if (by[d] != null) last = by[d];
+    return last;
+  });
 }
 
 function renderPfChart() {
@@ -465,6 +598,18 @@ function renderPfChart() {
     datasets.push({ label: "Same $ into Nasdaq", data: data.map((d) => d.bench_ndq), borderColor: "#e91e63",
       borderDash: [3, 3], pointRadius: 0, tension: .15, borderWidth: 1.5 });
   }
+  const stk = stocksSeries(data.map((d) => d.date));
+  const note = $("#pf-nw-note");
+  if (note) note.textContent = stk === "masked"
+    ? "reveal Net Worth on the card above to chart the combined total" : "";
+  if (Array.isArray(stk)) {
+    datasets.push({ label: "Stocks", data: stk, borderColor: "#00bcd4",
+      pointRadius: 0, tension: .15, borderWidth: 1.5 });
+    datasets.push({ label: "Net worth (crypto + stocks)",
+      data: data.map((d, i) => (stk[i] == null ? null : d.value + stk[i])),
+      borderColor: "#ffffff", backgroundColor: "rgba(255,255,255,.05)",
+      fill: true, pointRadius: 0, tension: .15, borderWidth: 2.5 });
+  }
   makeChart("#pf-chart", {
     type: "line",
     data: { labels: data.map((d) => d.date), datasets },
@@ -478,6 +623,8 @@ wireToggle("show-bench", "showBench", true, renderPfChart);
 wireToggle("show-bench-eth", "showBenchEth", true, renderPfChart);
 wireToggle("show-bench-spx", "showBenchSpx", true, renderPfChart);
 wireToggle("show-bench-ndq", "showBenchNdq", true, renderPfChart);
+wireToggle("show-stocks", "showStocks", false,
+           async () => { await loadStocksOverlay(); renderPfChart(); });
 
 function renderDrawdown(data) {
   let peak = 0;
@@ -508,8 +655,6 @@ async function loadCoins() {
   state.coins = await r.json();
   const opts = state.coins.map((c) => `<option value="${esc(c.symbol)}">${esc(c.symbol.toUpperCase())} — ${esc(c.name)}</option>`).join("");
   $("#tx-symbol").innerHTML = opts;
-  $("#cv-from").innerHTML = opts;
-  $("#cv-to").innerHTML = opts;
   $("#tf-symbol").innerHTML = opts;
   $("#al-symbol").innerHTML = opts;
   $("#tx-filter").innerHTML = `<option value="">All coins</option>` + opts;
@@ -519,10 +664,16 @@ async function loadCoins() {
     <td><span class="badge">${esc(c.category)}</span></td></tr>`).join("");
 }
 
+// staking rewards / interest are stored as buys; the notes field is what marks them
+const isReward = (t) => /reward|interest|stak/i.test(t.notes || "");
+
 async function loadTransactions() {
   const sym = $("#tx-filter").value;
+  const type = $("#tx-type-filter").value;
   const r = await fetch("/api/transactions" + (sym ? "?symbol=" + encodeURIComponent(sym) : ""));
-  const txs = await r.json();
+  let txs = await r.json();
+  if (type === "reward") txs = txs.filter(isReward);
+  else if (type) txs = txs.filter((t) => t.side === type && !isReward(t));
   state.txs = txs; // kept so the edit button can look a row up by id
   // live prices come from the portfolio payload (includes closed positions)
   const prices = {};
@@ -556,11 +707,17 @@ async function loadTransactions() {
   }).join("");
 }
 $("#tx-filter").addEventListener("change", loadTransactions);
+$("#tx-type-filter").value = localStorage.getItem("txTypeFilter") || "";
+$("#tx-type-filter").addEventListener("change", () => {
+  localStorage.setItem("txTypeFilter", $("#tx-type-filter").value);
+  loadTransactions();
+});
 
 window.editTx = (id) => {
   const t = (state.txs || []).find((x) => x.id === id);
   if (!t) return;
-  $("#tx-details").open = true; // the form is collapsed by default now
+  $("#tx-details").classList.remove("hidden");
+  $("#tx-details").open = true;
   $("#tx-id").value = t.id;
   $("#tx-side").value = t.side;
   $("#tx-date").value = t.date;
@@ -572,15 +729,13 @@ window.editTx = (id) => {
   $("#tx-exchange").value = t.exchange || "";
   $("#tx-notes").value = t.notes || "";
   $("#tx-form-title").textContent = "Edit Transaction #" + t.id;
-  $("#tx-submit").textContent = "Save";
-  $("#tx-cancel").classList.remove("hidden");
   window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 window.deleteTx = async (id) => {
   if (!confirm("Delete transaction #" + id + "?")) return;
   await fetch("/api/transactions/" + id, { method: "DELETE" });
-  loadTransactions(); loadPortfolio(); loadPortfolioHistory();
+  refreshLedgerViews();
 };
 
 // price auto-populates from total ÷ quantity (how the old spreadsheet did it)
@@ -598,12 +753,12 @@ function resetTxForm() {
   $("#tx-form").reset();
   $("#tx-id").value = "";
   $("#tx-date").value = new Date().toISOString().slice(0, 10);
-  $("#cv-date").value = new Date().toISOString().slice(0, 10);
   $("#tf-date").value = new Date().toISOString().slice(0, 10);
   $("#tx-exchange").value = "COINBASE";
-  $("#tx-form-title").textContent = "Add Transaction";
-  $("#tx-submit").textContent = "Add";
-  $("#tx-cancel").classList.add("hidden");
+  // manual entry is retired (Coinbase sync books everything); the form only
+  // ever opens to correct an existing row, so it hides itself again after use
+  $("#tx-details").classList.add("hidden");
+  $("#tx-details").open = false;
 }
 $("#tx-cancel").addEventListener("click", resetTxForm);
 
@@ -627,19 +782,13 @@ $("#tx-form").addEventListener("submit", async (e) => {
       ? +body.quantity * +body.price + +body.fee
       : +body.quantity * +body.price - +body.fee;
   }
-  const r = await fetch(id ? "/api/transactions/" + id : "/api/transactions", {
-    method: id ? "PUT" : "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const res = await r.json();
+  const res = await postJSON(id ? "/api/transactions/" + id : "/api/transactions",
+    body, id ? "PUT" : "POST");
   const msg = $("#tx-msg");
-  if (res.error) { msg.textContent = res.error; msg.className = "neg"; return; }
-  msg.textContent = id ? "Saved ✓" : "Added ✓";
-  msg.className = "pos";
-  setTimeout(() => (msg.textContent = ""), 3000);
+  if (res.error) { flash(msg, res.error, false); return; }
+  flash(msg, id ? "Saved ✓" : "Added ✓", true);
   resetTxForm();
-  loadTransactions(); loadPortfolio(); loadPortfolioHistory();
+  refreshLedgerViews();
 });
 
 /* ---------------------------------------------------------------- cold storage transfers */
@@ -667,49 +816,17 @@ window.deleteTransfer = async (id) => {
 $("#tf-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const msg = $("#tf-msg");
-  const r = await fetch("/api/transfers", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      date: $("#tf-date").value,
-      symbol: $("#tf-symbol").value,
-      quantity: $("#tf-qty").value,
-      direction: $("#tf-direction").value,
-      notes: $("#tf-notes").value,
-    }),
+  const res = await postJSON("/api/transfers", {
+    date: $("#tf-date").value,
+    symbol: $("#tf-symbol").value,
+    quantity: $("#tf-qty").value,
+    direction: $("#tf-direction").value,
+    notes: $("#tf-notes").value,
   });
-  const res = await r.json();
-  if (res.error) { msg.textContent = res.error; msg.className = "neg"; return; }
-  msg.textContent = "Transfer recorded ✓";
-  msg.className = "pos";
-  setTimeout(() => (msg.textContent = ""), 4000);
+  if (res.error) { flash(msg, res.error, false); return; }
+  flash(msg, "Transfer recorded ✓", true, 4000);
   $("#tf-qty").value = $("#tf-notes").value = "";
   loadTransfers(); loadPortfolio();
-});
-
-/* ---------------------------------------------------------------- conversions */
-$("#cv-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const msg = $("#cv-msg");
-  const r = await fetch("/api/convert", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      date: $("#cv-date").value,
-      from_symbol: $("#cv-from").value,
-      from_qty: $("#cv-from-qty").value,
-      to_symbol: $("#cv-to").value,
-      to_qty: $("#cv-to-qty").value,
-      usd: $("#cv-usd").value,
-      notes: $("#cv-notes").value,
-    }),
-  });
-  const res = await r.json();
-  if (res.error) { msg.textContent = res.error; msg.className = "neg"; return; }
-  msg.textContent = "Conversion recorded ✓" +
-    (res.adjustment ? ` (plus a ${res.adjustment.toFixed(8)} zero-cost balance adjustment)` : "");
-  msg.className = "pos";
-  setTimeout(() => (msg.textContent = ""), 6000);
-  $("#cv-from-qty").value = $("#cv-to-qty").value = $("#cv-usd").value = $("#cv-notes").value = "";
-  loadTransactions(); loadPortfolio(); loadPortfolioHistory();
 });
 
 /* ---------------------------------------------------------------- coin chart */
@@ -755,7 +872,7 @@ async function loadCoinChart(panel = 1) {
   const labels = data.map((d) => d.date);
   const inRange = new Set(labels);
   const markers = (side) => txs
-    .filter((t) => t.side === side && inRange.has(t.date) && t.price > 0) // skip $0-basis adjustments
+    .filter((t) => t.side === side && inRange.has(t.date) && t.price > 0 && t.total >= 5) // skip $0-basis adjustments and micro-transactions under $5
     .map((t) => ({ x: t.date, y: t.price, r: Math.min(4 + Math.sqrt(t.total) / 2, 12), tx: t }));
   const buys = markers("buy"), sells = markers("sell");
   const datasets = [
@@ -839,6 +956,7 @@ async function loadStocks() {
       <div class="value neg">${fmtUSD(s.fees.ytd, 2)}</div>
       <div class="sub">${s.fees.quarter_label || "Q"}: ${fmtUSD(s.fees.quarter, 0)} · ~${fmtUSD(s.fees.expected_annual, 0)}/yr at ${s.fees.rate}%</div></div>` : "");
   $("#stk-asof").textContent = s.as_of ? `positions as of ${s.as_of} import` : "";
+  renderFeesPanel(s);
   // by-portfolio table + donut
   $("#stk-accts tbody").innerHTML = s.accounts.map((a) => `
     <tr>
@@ -911,6 +1029,65 @@ function renderStockHoldings() {
     </tr>`).join("");
 }
 $("#stk-acct-filter").addEventListener("change", renderStockHoldings);
+
+// Fees vs income: both sides come straight off the RJ statements — income is
+// per-position reported income, the fee is this quarter's charge x4. The
+// industry median at this asset level is ~1.0%, so the gap is worth naming.
+const FEE_MEDIAN = 1.0;
+
+function renderFeesPanel(s) {
+  const box = $("#fees-cards");
+  if (!box) return;
+  if (!s.fees) { box.innerHTML = `<p class="hint">Import a statement to see fees.</p>`; return; }
+  const value = s.total_value || 0, income = s.total_income || 0;
+  const fee = s.fees.expected_annual || 0;
+  const yieldPct = value > 0 ? (income / value) * 100 : null;
+  const feeOfIncome = income > 0 ? (fee / income) * 100 : null;
+  const net = income - fee;
+  $("#fees-asof").textContent = s.fees.quarter_label
+    ? `${s.fees.quarter_label} billing · ${s.fees.rate}% a year` : "";
+  box.innerHTML = `
+    <div class="card"><div class="label">Est. Income / yr</div>
+      <div class="value pos">${fmtUSD(income, 0)}</div>
+      <div class="sub">dividends &amp; interest</div></div>
+    <div class="card"><div class="label">Portfolio Yield</div>
+      <div class="value">${yieldPct != null ? yieldPct.toFixed(2) + "%" : "—"}</div>
+      <div class="sub">income ÷ value</div></div>
+    <div class="card"><div class="label">Advisory Fee / yr</div>
+      <div class="value neg">${fmtUSD(fee, 0)}</div>
+      <div class="sub">${s.fees.quarter_label || "Q"} × 4 at ${s.fees.rate}%</div></div>
+    <div class="card"><div class="label">Fee as % of Income</div>
+      <div class="value ${feeOfIncome != null && feeOfIncome > 100 ? "neg" : ""}">${
+        feeOfIncome != null ? feeOfIncome.toFixed(0) + "%" : "—"}</div>
+      <div class="sub">${net >= 0 ? "keeps " : "costs "}${fmtUSD(Math.abs(net), 0)} net</div></div>`;
+
+  const feeAccts = s.fees.accounts || {};
+  const rows = (s.accounts || []).map((a) => ({
+    name: a.account, value: a.value, income: a.income || 0,
+    fee: (feeAccts[a.account] || {}).annual || 0,
+  })).sort((x, y) => y.value - x.value);
+  $("#fees-table tbody").innerHTML = rows.map((r) => {
+    const y = r.value > 0 ? (r.income / r.value) * 100 : null;
+    const ratio = r.income > 0 ? (r.fee / r.income) * 100 : null;
+    return `<tr>
+      <td>${esc(r.name)}</td>
+      <td class="r">${fmtUSD(r.value, 2)}</td>
+      <td class="r pos">${fmtUSD(r.income, 0)}</td>
+      <td class="r">${y != null ? y.toFixed(2) + "%" : "—"}</td>
+      <td class="r neg">${fmtUSD(r.fee, 0)}</td>
+      <td class="r ${ratio != null && ratio > 100 ? "neg" : ""}">${ratio != null ? ratio.toFixed(0) + "%" : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  const rate = s.fees.rate || 0;
+  const gap = value * (rate - FEE_MEDIAN) / 100;
+  $("#fees-verdict").innerHTML = feeOfIncome == null ? "" :
+    `The fee is <b>${feeOfIncome.toFixed(0)}%</b> of what the portfolio pays you` +
+    (net < 0 ? ` — it costs <b>${fmtUSD(-net, 0)}</b> a year more than it yields.` : `.`) +
+    (rate > FEE_MEDIAN
+      ? ` At ${rate}% you are above the ~${FEE_MEDIAN}% median for this asset level; household-aggregated pricing would be worth about <b>${fmtUSD(gap, 0)}</b> a year.`
+      : "");
+}
 
 async function loadStocksHistory() {
   const days = state.stkDays || 365;
@@ -1057,11 +1234,59 @@ async function loadMarket() {
       <td class="r ${pctClass(t.change_24h)}">${fmtPct(t.change_24h)}</td></tr>`).join("");
 }
 
+// The index runs 0-100 on the y axis, so the mood boundaries are horizontal
+// bands. Drawn as a local Chart.js plugin: faint fill per zone, a dashed line
+// on each threshold, and the name of the zone at the left edge.
+const FNG_ZONES = [
+  { from: 0,  to: 25,  label: "Extreme Fear",  color: "#e74c3c" },
+  { from: 25, to: 45,  label: "Fear",          color: "#e67e22" },
+  { from: 45, to: 55,  label: "Neutral",       color: "#f1c40f" },
+  { from: 55, to: 75,  label: "Greed",         color: "#8bc34a" },
+  { from: 75, to: 100, label: "Extreme Greed", color: "#2ecc71" },
+];
+
+const fngZonesPlugin = {
+  id: "fngZones",
+  beforeDatasetsDraw(chart) {
+    const { ctx, chartArea: area, scales } = chart;
+    const y = scales.y;
+    if (!y) return;
+    ctx.save();
+    FNG_ZONES.forEach((z) => {
+      const top = y.getPixelForValue(Math.min(z.to, y.max));
+      const bot = y.getPixelForValue(Math.max(z.from, y.min));
+      ctx.fillStyle = z.color + "14";                  // ~8% alpha
+      ctx.fillRect(area.left, top, area.right - area.left, bot - top);
+      if (z.to < 100) {                                // threshold line
+        const ly = y.getPixelForValue(z.to);
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = z.color + "99";
+        ctx.lineWidth = 1;
+        ctx.moveTo(area.left, ly); ctx.lineTo(area.right, ly);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const mid = (top + bot) / 2;
+      if (bot - top > 14) {                            // only label if it fits
+        ctx.fillStyle = z.color;
+        ctx.font = "600 9.5px system-ui, -apple-system, sans-serif";
+        ctx.textBaseline = "middle";
+        ctx.fillText(z.label.toUpperCase(), area.left + 6, mid);
+      }
+    });
+    ctx.restore();
+  },
+};
+
 function renderFngChart() {
   const hist = (state.fngHistory || []).slice(-state.fngDays);
   const datasets = [{ label: "Fear & Greed", data: hist.map((h) => h.value),
     borderColor: "#f5a623", pointRadius: 0, tension: .3, borderWidth: 2, yAxisID: "y" }];
-  const scales = { y: { min: 0, max: 100 }, x: { ticks: { maxTicksLimit: 8 } } };
+  const scales = { y: { min: 0, max: 100, ticks: { stepSize: 25,
+                     callback: (v) => ([25, 45, 55, 75].includes(v) ? v : v) } },
+                   x: { ticks: { maxTicksLimit: 8 } } };
+  scales.y.afterBuildTicks = (ax) => { ax.ticks = [0, 25, 45, 55, 75, 100].map((v) => ({ value: v })); };
   if (state.btcMap) {
     let last = null; // carry the last known close over any gap days
     datasets.push({ label: "BTC price", yAxisID: "y1",
@@ -1072,6 +1297,7 @@ function renderFngChart() {
   }
   makeChart("#fng-chart", {
     type: "line",
+    plugins: [fngZonesPlugin],
     data: { labels: hist.map((h) => h.date), datasets },
     options: {
       interaction: { mode: "index", intersect: false },
@@ -1207,19 +1433,13 @@ window.deleteAlert = async (id) => {
 $("#al-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const msg = $("#al-msg");
-  const r = await fetch("/api/alerts", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      symbol: $("#al-symbol").value,
-      condition: $("#al-cond").value,
-      price: $("#al-price").value,
-    }),
+  const res = await postJSON("/api/alerts", {
+    symbol: $("#al-symbol").value,
+    condition: $("#al-cond").value,
+    price: $("#al-price").value,
   });
-  const res = await r.json();
-  if (res.error) { msg.textContent = res.error; msg.className = "neg"; return; }
-  msg.textContent = "Alert set ✓";
-  msg.className = "pos";
-  setTimeout(() => (msg.textContent = ""), 3000);
+  if (res.error) { flash(msg, res.error, false); return; }
+  flash(msg, "Alert set ✓", true);
   $("#al-price").value = "";
   loadAlerts();
 });
@@ -1254,13 +1474,13 @@ $("#cb-sync").addEventListener("click", async () => {
   const msg = $("#cb-msg");
   msg.textContent = "Syncing…";
   msg.className = "";
-  const r = await (await fetch("/api/coinbase/sync", { method: "POST" })).json();
-  if (r.error) { msg.textContent = r.error; msg.className = "neg"; return; }
+  const r = await postJSON("/api/coinbase/sync");
+  if (r.error) { flash(msg, r.error, false); return; }
   const i = r.imported;
   msg.textContent = `Done ✓ imported ${i.buys} buys, ${i.sells} sells, ${i.transfers} transfers` +
     (r.warnings && r.warnings.length ? " — " + r.warnings.join(" ") : "");
   msg.className = r.warnings && r.warnings.length ? "neg" : "pos";
-  loadCbStatus(); loadPortfolio(); loadTransactions(); loadTransfers(); loadPortfolioHistory();
+  loadCbStatus(); loadTransfers(); refreshLedgerViews();
 });
 
 /* ---------------------------------------------------------------- passkeys (Face ID) */
@@ -1294,7 +1514,7 @@ $("#pk-add").addEventListener("click", async () => {
   const msg = $("#pk-msg");
   msg.textContent = "Follow the prompt…"; msg.className = "";
   try {
-    const opts = await (await fetch("/api/passkey/register/options", { method: "POST" })).json();
+    const opts = await postJSON("/api/passkey/register/options");
     if (opts.error) { msg.textContent = opts.error; msg.className = "neg"; return; }
     opts.challenge = _b64uToBuf(opts.challenge);
     opts.user.id = _b64uToBuf(opts.user.id);
@@ -1311,19 +1531,14 @@ $("#pk-add").addEventListener("click", async () => {
         clientExtensionResults: cred.getClientExtensionResults(),
       },
     };
-    const res = await (await fetch("/api/passkey/register/verify", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })).json();
+    const res = await postJSON("/api/passkey/register/verify", payload);
     if (res.ok) {
-      msg.textContent = "Added ✓ — you can now sign in with Face ID on this device.";
-      msg.className = "pos";
+      flash(msg, "Added ✓ — you can now sign in with Face ID on this device.", true, 0);
       $("#pk-name").value = "";
       loadPasskeys();
-    } else { msg.textContent = res.error || "Failed"; msg.className = "neg"; }
+    } else { flash(msg, res.error || "Failed", false); }
   } catch (e) {
-    if (e.name === "NotAllowedError") { msg.textContent = "Cancelled."; msg.className = "neg"; }
-    else { msg.textContent = e.message; msg.className = "neg"; }
+    flash(msg, e.name === "NotAllowedError" ? "Cancelled." : e.message, false);
   }
 });
 
@@ -1337,10 +1552,8 @@ async function loadBackupInfo() {
 }
 $("#backup-now").addEventListener("click", async () => {
   const msg = $("#backup-msg");
-  const res = await (await fetch("/api/backup", { method: "POST" })).json();
-  msg.textContent = res.ok ? "Backed up ✓" : (res.error || "Backup failed");
-  msg.className = res.ok ? "pos" : "neg";
-  setTimeout(() => (msg.textContent = ""), 4000);
+  const res = await postJSON("/api/backup");
+  flash(msg, res.ok ? "Backed up ✓" : (res.error || "Backup failed"), res.ok, 4000);
   loadBackupInfo();
 });
 $("#tax-dl").addEventListener("click", () => {
@@ -1377,10 +1590,7 @@ $("#todo-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("#todo-text").value.trim();
   if (!text) return;
-  await fetch("/api/todos", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
+  await postJSON("/api/todos", { text });
   $("#todo-text").value = "";
   loadTodos();
 });
@@ -1414,10 +1624,8 @@ window.addCoin = async (i) => {
   const c = (state.searchResults || [])[i];
   if (!c) return;
   const category = $("#cat-" + i) ? $("#cat-" + i).value : "Other";
-  await fetch("/api/coins", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ symbol: c.symbol.toLowerCase(), coingecko_id: c.id, name: c.name, category }),
-  });
+  await postJSON("/api/coins",
+    { symbol: c.symbol.toLowerCase(), coingecko_id: c.id, name: c.name, category });
   $("#coin-search").value = "";
   $("#coin-results").innerHTML = "";
   await loadCoins();
@@ -1428,21 +1636,298 @@ $("#pw-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const msg = $("#pw-msg");
   if ($("#pw-new").value !== $("#pw-new2").value) {
-    msg.textContent = "New passwords don't match.";
-    msg.className = "neg";
+    flash(msg, "New passwords don't match.", false);
     return;
   }
-  const r = await fetch("/api/change_password", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ current: $("#pw-current").value, new: $("#pw-new").value }),
-  });
-  const res = await r.json();
-  if (res.error) { msg.textContent = res.error; msg.className = "neg"; return; }
-  msg.textContent = "Password changed ✓";
-  msg.className = "pos";
+  const res = await postJSON("/api/change_password",
+    { current: $("#pw-current").value, new: $("#pw-new").value });
+  if (res.error) { flash(msg, res.error, false); return; }
+  flash(msg, "Password changed ✓", true, 0);
   $("#pw-form").reset();
 });
 $("#net-url").textContent = "http://" + location.hostname + ":" + (location.port || 80);
+
+/* ------------------------------------------------- did you buy the fear? */
+const BF_COLORS = { "Extreme Fear": "#e74c3c", "Fear": "#e67e22", "Neutral": "#f1c40f",
+                    "Greed": "#8bc34a", "Extreme Greed": "#2ecc71" };
+
+async function loadBuyFear() {
+  const d = await getJSON("/api/market/buy_sentiment");
+  if (d.error) { $("#bf-sub").textContent = d.error; return; }
+  const labels = d.buckets.map((b) => b.bucket);
+  $("#bf-sub").textContent =
+    `${d.buys_scored} buys · ${d.first} to ${d.last}` +
+    (d.rewards_excluded ? ` · ${d.rewards_excluded} rewards excluded` : "");
+
+  makeChart("#bf-chart", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "Invested", data: d.buckets.map((b) => b.invested),
+          backgroundColor: labels.map((l) => BF_COLORS[l] + "cc"), borderWidth: 0 },
+        { label: "Worth today", data: d.buckets.map((b) => b.value_now),
+          backgroundColor: labels.map((l) => BF_COLORS[l] + "55"),
+          borderColor: labels.map((l) => BF_COLORS[l]), borderWidth: 1.5 },
+      ],
+    },
+    options: lineOpts({
+      hover: "index", legend: { display: true },
+      tooltip: (c) => ` ${c.dataset.label}: ${fmtUSD(c.parsed.y, 0)}`,
+      maxX: 5, y: usdTicks(0),
+    }),
+  });
+
+  $("#bf-table tbody").innerHTML = d.buckets.map((b) => `
+    <tr>
+      <td><span class="badge" style="background:${BF_COLORS[b.bucket]}22;color:${BF_COLORS[b.bucket]}">
+        ${esc(b.bucket)}</span> <span class="muted">${b.lo}–${b.hi}</span></td>
+      <td class="r">${b.n}</td>
+      <td class="r">${fmtUSD(b.invested, 2)}</td>
+      <td class="r">${b.share.toFixed(1)}%</td>
+      <td class="r">${fmtUSD(b.value_now, 2)}</td>
+      <td class="r ${pctClass(b.return_pct)}">${b.return_pct != null ? fmtPct(b.return_pct) : "—"}</td>
+    </tr>`).join("");
+
+  // the honest read: how your buying mood compares with the era you bought in
+  const w = d.avg_fng_weighted, per = d.avg_fng_period;
+  const diff = w - per;
+  const lean = Math.abs(diff) < 2 ? "right at the market's average mood"
+    : diff > 0 ? `<b>${diff.toFixed(1)} points greedier</b> than the market averaged over the same years`
+               : `<b>${Math.abs(diff).toFixed(1)} points more fearful</b> than the market averaged over the same years`;
+  const fearBuckets = d.buckets.filter((b) => b.lo < 46);
+  const greedBuckets = d.buckets.filter((b) => b.lo >= 56);
+  const fearIn = fearBuckets.reduce((s, b) => s + b.invested, 0);
+  const greedIn = greedBuckets.reduce((s, b) => s + b.invested, 0);
+  const ret = (arr) => {
+    const i = arr.reduce((s, b) => s + b.invested, 0), v = arr.reduce((s, b) => s + b.value_now, 0);
+    return i > 0 ? ((v - i) / i) * 100 : null;
+  };
+  const fr = ret(fearBuckets), gr = ret(greedBuckets);
+  $("#bf-verdict").innerHTML =
+    `Your average buy landed at <b>${w.toFixed(1)}</b> on the index (dollar-weighted), ${lean}. ` +
+    `You put <b>${fmtUSD(fearIn, 0)}</b> in while the market was fearful` +
+    (fr != null ? ` (now ${fmtPct(fr)})` : "") +
+    ` and <b>${fmtUSD(greedIn, 0)}</b> while it was greedy` +
+    (gr != null ? ` (now ${fmtPct(gr)})` : "") + ".";
+}
+
+/* ---------------------------------------------------------- tax preview */
+// Unrealized position by holding period. Everything here comes from the same
+// FIFO queue the Form 8949 export uses — this just reads it before a sale
+// instead of after one.
+async function loadTaxPreview() {
+  const t = await getJSON("/api/tax/preview");
+  state.tax = t;
+  $("#tax-asof").textContent = "as of " + t.as_of;
+  const sh = t.totals.short, lg = t.totals.long;
+  $("#tax-cards").innerHTML = `
+    <div class="card"><div class="label">Short-term (taxed higher)</div>
+      <div class="value ${pctClass(sh.gain)}">${fmtUSD(sh.gain, 2)}</div>
+      <div class="sub">${fmtUSD(sh.value, 0)} held under 1 year</div></div>
+    <div class="card"><div class="label">Long-term (taxed lower)</div>
+      <div class="value ${pctClass(lg.gain)}">${fmtUSD(lg.gain, 2)}</div>
+      <div class="sub">${fmtUSD(lg.value, 0)} held over 1 year</div></div>
+    <div class="card"><div class="label">Total unrealized</div>
+      <div class="value ${pctClass(sh.gain + lg.gain)}">${fmtUSD(sh.gain + lg.gain, 2)}</div>
+      <div class="sub">${(lg.value + sh.value) > 0
+        ? (lg.value / (lg.value + sh.value) * 100).toFixed(0) + "% already long-term" : ""}</div></div>
+    <div class="card"><div class="label">Crossing within 90 days</div>
+      <div class="value">${t.soon.length}</div>
+      <div class="sub">${t.soon.length ? "next in " + t.soon[0].days_left + " days" : "nothing pending"}</div></div>`;
+
+  $("#tax-preview-table tbody").innerHTML = t.coins.map((c) => `
+    <tr>
+      <td>${esc(c.symbol)}</td>
+      <td class="r">${c.short.qty > 1e-12 ? fmtNum(c.short.qty) : "—"}</td>
+      <td class="r ${pctClass(c.short.qty > 1e-12 ? c.short.gain : null)}">${c.short.qty > 1e-12 ? fmtUSD(c.short.gain, 2) : "—"}</td>
+      <td class="r">${c.long.qty > 1e-12 ? fmtNum(c.long.qty) : "—"}</td>
+      <td class="r ${pctClass(c.long.qty > 1e-12 ? c.long.gain : null)}">${c.long.qty > 1e-12 ? fmtUSD(c.long.gain, 2) : "—"}</td>
+      <td>${c.next_cross
+        ? `${fmtNum(c.next_cross.qty)} on ${esc(c.next_cross.crosses)} <span class="muted">(${c.next_cross.days_left}d)</span>`
+        : (c.short.qty > 1e-12 ? "—" : "all long-term")}</td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted">No open lots.</td></tr>`;
+
+  $("#tax-soon-table tbody").innerHTML = t.soon.map((l) => `
+    <tr>
+      <td>${esc(l.symbol)}</td>
+      <td class="r">${fmtNum(l.qty)}</td>
+      <td>${esc(l.acquired)}</td>
+      <td>${esc(l.crosses)}</td>
+      <td class="r">${l.days_left}</td>
+      <td class="r ${pctClass(l.gain)}">${fmtUSD(l.gain, 2)}</td>
+    </tr>`).join("") || `<tr><td colspan="6" class="muted">No lots cross in the next 90 days.</td></tr>`;
+
+  const sel = $("#wi-symbol");
+  const keep = sel.value;
+  sel.innerHTML = t.coins.map((c) => `<option value="${esc(c.symbol.toLowerCase())}">${esc(c.symbol)}</option>`).join("");
+  if (keep) sel.value = keep;
+  updateLongTermTile();
+}
+
+// dashboard tile: the nearest lot about to become long-term
+function updateLongTermTile() {
+  const t = state.tax;
+  const el = $("#card-lt");
+  if (!t || !el) return;
+  const next = t.soon[0];
+  el.textContent = next ? next.days_left + "d" : "—";
+  $("#card-lt-sub").textContent = next
+    ? `${fmtNum(next.qty)} ${next.symbol} goes long-term ${next.crosses}`
+    : "nothing within 90 days";
+}
+
+async function runWhatIf() {
+  const box = $("#wi-result");
+  const sym = $("#wi-symbol").value, qty = $("#wi-qty").value.trim();
+  if (!sym || !qty) { box.innerHTML = `<p class="neg">Pick a coin and a quantity.</p>`; return; }
+  box.innerHTML = `<p class="muted">Calculating…</p>`;
+  const r = await getJSON(`/api/tax/whatif?symbol=${encodeURIComponent(sym)}&qty=${encodeURIComponent(qty)}`);
+  if (r.error) { box.innerHTML = `<p class="neg">${esc(r.error)}</p>`; return; }
+  const sh = r.short, lg = r.long;
+  box.innerHTML = `
+    <div class="cards" style="margin-top:10px">
+      <div class="card"><div class="label">Proceeds</div>
+        <div class="value">${fmtUSD(r.proceeds, 2)}</div>
+        <div class="sub">${fmtNum(r.qty)} ${esc(r.symbol)} at ${fmtUSD(r.price)}</div></div>
+      <div class="card"><div class="label">Cost basis (FIFO)</div>
+        <div class="value">${fmtUSD(r.cost, 2)}</div>
+        <div class="sub">${r.lots.length} lot${r.lots.length === 1 ? "" : "s"} consumed</div></div>
+      <div class="card"><div class="label">Taxable gain</div>
+        <div class="value ${pctClass(r.gain)}">${fmtUSD(r.gain, 2)}</div>
+        <div class="sub">short ${fmtUSD(sh.gain, 0)} · long ${fmtUSD(lg.gain, 0)}</div></div>
+    </div>
+    ${r.warning ? `<p class="neg" style="margin:8px 0 0">${esc(r.warning)}</p>` : ""}
+    ${r.uncovered > 1e-12 ? `<p class="neg" style="margin:8px 0 0">${fmtNum(r.uncovered)} has no recorded purchase — treated as $0 cost basis.</p>` : ""}
+    <div class="table-scroll" style="margin-top:10px">
+      <table><thead><tr><th>Lot bought</th><th class="r">Quantity</th><th class="r">Cost</th>
+        <th class="r">Proceeds</th><th class="r">Gain</th><th>Term</th></tr></thead>
+      <tbody>${r.lots.map((l) => `
+        <tr><td>${esc(l.acquired)}</td><td class="r">${fmtNum(l.qty)}</td>
+        <td class="r">${fmtUSD(l.cost, 2)}</td><td class="r">${fmtUSD(l.proceeds, 2)}</td>
+        <td class="r ${pctClass(l.gain)}">${fmtUSD(l.gain, 2)}</td>
+        <td><span class="badge">${l.long_term ? "LONG" : "SHORT"}</span></td></tr>`).join("")}
+      </tbody></table>
+    </div>`;
+}
+$("#wi-run").addEventListener("click", runWhatIf);
+$("#wi-all").addEventListener("click", () => {
+  const c = (state.tax?.coins || []).find((x) => x.symbol.toLowerCase() === $("#wi-symbol").value);
+  if (!c) return;
+  $("#wi-qty").value = (c.short.qty + c.long.qty).toFixed(8);
+  runWhatIf();
+});
+
+/* ------------------------------------------------------- live price feed */
+// Display layer only: the browser talks straight to Coinbase's free public
+// market-data websocket (no key, no server involvement). Nothing is stored and
+// no math moves server-side — the 120s poll below stays the source of truth,
+// this just repaints price/value/P-L cells between polls. Coins with no
+// Coinbase USD pair simply never tick and keep showing polled prices.
+const LIVE_PRODUCT_OVERRIDES = { matic: "POL-USD" };  // MATIC trades as POL on Coinbase
+const live = { ws: null, byProduct: {}, pending: {}, timer: null, tries: 0, on: false };
+
+async function startLiveFeed() {
+  if (!window.WebSocket || live.ws) return;
+  const held = (state.portfolio?.holdings || []).filter((h) => !h.closed && h.quantity > 1e-9);
+  if (!held.length) return;
+  let valid;
+  try {  // ask Coinbase which pairs actually exist rather than guessing
+    const products = await fetch("https://api.exchange.coinbase.com/products").then((r) => r.json());
+    valid = new Set(products.filter((p) => p.status === "online" && !p.trading_disabled)
+                            .map((p) => p.id));
+  } catch { return; }  // offline or blocked: stay on the poll, no error shown
+  live.byProduct = {};
+  held.forEach((h) => {
+    const id = LIVE_PRODUCT_OVERRIDES[h.symbol] || h.symbol.toUpperCase() + "-USD";
+    if (valid.has(id)) live.byProduct[id] = h.symbol;
+  });
+  const ids = Object.keys(live.byProduct);
+  if (!ids.length) return;
+  connectLive(ids);
+}
+
+function connectLive(ids) {
+  const ws = new WebSocket("wss://ws-feed.exchange.coinbase.com");
+  live.ws = ws;
+  ws.onopen = () => {
+    live.tries = 0; live.on = true; markLive();
+    ws.send(JSON.stringify({ type: "subscribe", product_ids: ids, channels: ["ticker"] }));
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type !== "ticker" || !m.price) return;
+    const sym = live.byProduct[m.product_id];
+    if (sym) { live.pending[sym] = +m.price; scheduleLivePaint(); }
+  };
+  ws.onclose = () => {
+    live.ws = null; live.on = false; markLive();
+    const wait = Math.min(30000, 1000 * 2 ** live.tries++);   // backoff, cap 30s
+    setTimeout(() => connectLive(ids), wait);
+  };
+  ws.onerror = () => ws.close();
+}
+
+// repaint at most 4x/sec no matter how fast the feed talks
+function scheduleLivePaint() {
+  if (live.timer) return;
+  live.timer = setTimeout(() => { live.timer = null; paintLive(); }, 250);
+}
+
+function paintLive() {
+  const holdings = state.portfolio?.holdings || [];
+  let total = 0, changed = false;
+  holdings.forEach((h) => {
+    const px = live.pending[h.symbol];
+    if (px && !h.closed) { h.price = px; h.value = h.quantity * px;
+      h.pl = h.value - h.net_cost;
+      h.pl_pct = h.net_cost > 0 ? (h.pl / h.net_cost) * 100 : null;
+      changed = true; }
+    if (!h.closed) total += h.value || 0;
+  });
+  if (!changed) return;
+  Object.keys(live.pending).forEach((sym) => {
+    const h = holdings.find((x) => x.symbol === sym);
+    const row = document.querySelector(`#holdings-table tbody tr[data-sym="${sym}"]`);
+    if (!h || !row) return;
+    const set = (cell, text, cls) => {
+      const td = row.querySelector(`[data-cell="${cell}"]`);
+      if (!td || td.textContent === text) return;
+      const up = td.dataset.prev !== undefined && +td.dataset.prev < h.price;
+      td.textContent = text;
+      if (cls !== undefined) td.className = "r " + cls;
+      if (cell === "price") {
+        td.classList.add(up ? "tick-up" : "tick-down");
+        setTimeout(() => td.classList.remove("tick-up", "tick-down"), 700);
+        td.dataset.prev = h.price;
+      }
+    };
+    set("price", fmtUSD(h.price));
+    set("value", fmtUSD(h.value, 2));
+    set("pl", fmtUSD(h.pl, 2), pctClass(h.pl));
+    set("plpct", fmtPct(h.pl_pct), pctClass(h.pl_pct));
+  });
+  live.pending = {};
+  // keep the headline cards honest between polls
+  const pv = document.querySelector("#summary-cards .card .value");
+  if (pv && state.portfolio) {
+    state.portfolio.total_value = total;
+    pv.textContent = fmtUSD(total, 2);
+    pv.className = "value " + pctClass(total - state.portfolio.total_cost);
+  }
+}
+
+function markLive() {
+  const el = $("#asof");
+  if (!el) return;
+  el.querySelector(".live-dot")?.remove();
+  if (!live.on) return;
+  const dot = document.createElement("span");
+  dot.className = "live-dot";
+  dot.title = "Live prices streaming from Coinbase";
+  dot.textContent = " ● LIVE";
+  el.appendChild(dot);
+}
 
 /* ---------------------------------------------------------------- init */
 async function init() {
@@ -1458,8 +1943,10 @@ async function init() {
   loadAlerts();
   loadPasskeys();
   loadPortfolioHistory();
+  loadTaxPreview();
   loadMonthlyChart();
   loadAllocationHistory();
   setInterval(async () => { await loadPortfolio(); loadTransactions(); }, 120000); // refresh prices every 2 min
+  startLiveFeed();  // ticks between polls; harmless no-op if the feed is unreachable
 }
 init();

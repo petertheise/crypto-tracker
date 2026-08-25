@@ -1,6 +1,9 @@
 # secrets & personal data - never commit
 coinbase_key.json
+rj_accounts.json
 portfolio.db
+portfolio.db-wal
+portfolio.db-shm
 backups/
 tracker.log
 *.log
@@ -13,4 +16,3 @@ __pycache__/
 
 # machine-local Claude Code config
 .claude/
-HANDOFF.md
